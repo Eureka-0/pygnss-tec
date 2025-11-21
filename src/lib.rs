@@ -185,7 +185,7 @@ fn pivot_observations(
 /// # Returns
 /// * `PyResult<PyDict>` - Dictionary containing the observation data.
 #[pyfunction]
-fn read_obs(
+fn _read_obs(
     py: Python<'_>,
     obs_fn: Vec<String>,
     nav_fn: Option<Vec<String>>,
@@ -257,7 +257,7 @@ fn read_obs(
 }
 
 #[pymodule]
-fn rinex_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(read_obs, m)?)?;
+fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(_read_obs, m)?)?;
     Ok(())
 }

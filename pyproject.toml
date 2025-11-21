@@ -1,0 +1,26 @@
+[project]
+name = "pygnss-tec"
+version = "0.1.0"
+description = "A Python package for GNSS TEC calculation and analysis with Rust-accelerated performance."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Xinlong Liu", email = "dblxl33236@gmail.com" }]
+keywords = ["gnss", "rinex", "tec", "ionosphere", "python", "rust"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Space Physics",
+]
+requires-python = ">=3.9"
+dependencies = []
+
+[build-system]
+requires = ["maturin>=1.8"]
+build-backend = "maturin"
+
+[tool.maturin]
+bindings = "pyo3"
+module-name = "gnss_tec._core"
+python-packages = ["gnss_tec"]

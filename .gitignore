@@ -12,3 +12,6 @@ target/
 
 # Virtual environments
 .venv
+
+# Jupyter Notebooks
+*.ipynb

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import re
 from pathlib import Path
 from typing import Iterable, Literal, overload
@@ -6,7 +8,7 @@ import pandas as pd
 import polars as pl
 import pymap3d as pm
 
-from .._core import read_obs
+from .._core import _read_obs
 
 ALL_CONSTELLATIONS = {
     "C": "BDS",
@@ -135,7 +137,7 @@ def read_rinex_obs(
                 t_str = pd.to_datetime(t[: -len(tz.group(0))]).strftime(form)
                 t_lim[i] = t_str + " " + tz.group(0)
 
-    result: dict = read_obs(
+    result: dict = _read_obs(
         obs_fn_list,
         nav_fn=nav_fn_list,
         constellations=constellations,

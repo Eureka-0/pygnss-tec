@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal, overload
 
@@ -21,6 +22,36 @@ ALL_CONSTELLATIONS = {
 }
 
 
+@dataclass
+class RinexObsHeader:
+    """Dataclass for RINEX observation file header metadata."""
+
+    version: str
+    "RINEX version."
+
+    constellation: str | None
+    "Constellation for which the RINEX file contains observations."
+
+    marker_name: str
+    "Marker name."
+
+    marker_type: str | None
+    "Marker type."
+
+    rx_ecef: tuple[float, float, float]
+    "Approximate receiver position in ECEF coordinates (X, Y, Z) in meters."
+
+    rx_geodetic: tuple[float, float, float]
+    """Approximate receiver position in geodetic coordinates (latitude, longitude,
+        altitude) in degrees and meters."""
+
+    sampling_interval: int | None
+    "Sampling interval in seconds."
+
+    leap_seconds: int | None
+    "Number of leap seconds."
+
+
 def _handle_fn(fn: str | Path | Iterable[str | Path]) -> list[str]:
     if isinstance(fn, (str, Path)):
         fn_list = [str(fn)]
@@ -30,10 +61,28 @@ def _handle_fn(fn: str | Path | Iterable[str | Path]) -> list[str]:
         raise TypeError(
             f"The file path must be a str, Path, or an iterable of str/Path, not {fn}."
         )
+
     for f in fn_list:
         if not Path(f).exists():
             raise FileNotFoundError(f"RINEX file not found: {f}")
+
     return fn_list
+
+
+def _handle_t_str(t_str: str | None) -> str | None:
+    if t_str is None:
+        return None
+
+    iso_format = "%Y-%m-%d %H:%M:%S"
+
+    if t_str.strip().upper().endswith("GPST"):
+        return pd.to_datetime(t_str.replace("GPST", "")).strftime(iso_format) + " GPST"
+    else:
+        dt = pd.to_datetime(t_str)
+        if dt.tzinfo is None:
+            return dt.strftime(iso_format) + " UTC"
+        else:
+            return dt.tz_convert("UTC").strftime(iso_format) + " UTC"
 
 
 @overload
@@ -44,7 +93,7 @@ def read_rinex_obs(
     constellations: str | None = None,
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     codes: Iterable[str] | None = None,
-) -> pl.LazyFrame: ...
+) -> tuple[RinexObsHeader, pl.LazyFrame]: ...
 
 
 @overload
@@ -55,7 +104,7 @@ def read_rinex_obs(
     constellations: str | None = None,
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     codes: Iterable[str] | None = None,
-) -> pl.DataFrame: ...
+) -> tuple[RinexObsHeader, pl.DataFrame]: ...
 
 
 def read_rinex_obs(
@@ -65,7 +114,7 @@ def read_rinex_obs(
     constellations: str | None = None,
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     codes: Iterable[str] | None = None,
-) -> pl.DataFrame | pl.LazyFrame:
+) -> tuple[RinexObsHeader, pl.DataFrame | pl.LazyFrame]:
     """Read RINEX observation file into a Polars DataFrame.
 
     Args:
@@ -84,19 +133,20 @@ def read_rinex_obs(
         t_lim (tuple[str | None, str | None] | list[str | None] | None, optional): Time
             limits for filtering observations. Should be a tuple or list with two
             elements representing the start and end times. Use None for no limit on
-            either end. Defaults to None.
+            either end. Timezone can be specified using ISO 8601 format (e.g.,
+            '2023-01-01 00:00:00Z', '2023-01-01 00:00:00+0800', as long as
+            `pd.to_datetime` can parse it). Additionally, 'GPST' is also supported
+            (e.g., '2023-01-01 00:00:00 GPST'). If no timezone is provided, UTC is
+            assumed. Defaults to None.
         codes (Iterable[str] | None, optional): Specific observation codes to extract
             (e.g., ['C1C', 'L1C']). If None, all available observation types are
             included. Defaults to None.
 
     Returns:
-        pl.DataFrame | pl.LazyFrame: DataFrame or LazyFrame containing the RINEX
-            observation data with following columns.
+        (RinexObsHeader, pl.DataFrame | pl.LazyFrame): A Dataclass containing metadata from the RINEX observation file header and a DataFrame or LazyFrame containing the RINEX observation data with following columns.
             - Time (datetime): Observation timestamp.
             - Station (str): 4-character station identifier.
             - PRN (str): Satellite PRN identifier.
-            - RX_LAT (float): Receiver latitude in degrees.
-            - RX_LON (float): Receiver longitude in degrees.
             - Azimuth (float): Satellite azimuth angle in degrees (if nav_fn provided).
             - Elevation (float): Satellite elevation angle in degrees (if nav_fn
                 provided).
@@ -125,17 +175,7 @@ def read_rinex_obs(
     if t_lim is None:
         t_lim = [None, None]
     else:
-        t_lim = [t_lim[0], t_lim[1]]
-    for i, t in enumerate(t_lim):
-        if isinstance(t, str):
-            tz = re.search(r"[A-Z]{3,4}$", t)
-            form = "%Y-%m-%dT%H:%M:%S"
-            if tz is None:
-                t_str = pd.to_datetime(t).strftime(form)
-                t_lim[i] = t_str + " UTC"
-            else:
-                t_str = pd.to_datetime(t[: -len(tz.group(0))]).strftime(form)
-                t_lim[i] = t_str + " " + tz.group(0)
+        t_lim = [_handle_t_str(t_lim[0]), _handle_t_str(t_lim[1])]
 
     result: dict = _read_obs(
         obs_fn_list,
@@ -145,22 +185,31 @@ def read_rinex_obs(
         codes=codes if codes is None else list(set(codes)),
     )
     codes = list(filter(lambda x: re.match(r"[A-Z]\d{1}[A-Z]$", x), result.keys()))
-    ordered_cols = ["Time", "Station", "PRN", "RX_LAT", "RX_LON"]
+    ordered_cols = ["Time", "Station", "PRN"]
     rx_x = result.pop("RX_X")
     rx_y = result.pop("RX_Y")
     rx_z = result.pop("RX_Z")
-    result["RX_LAT"], result["RX_LON"], rx_alt = pm.ecef2geodetic(
-        rx_x, rx_y, rx_z, deg=True
-    )
+    rx_lat, rx_lon, rx_alt = pm.ecef2geodetic(rx_x, rx_y, rx_z, deg=True)
     if nav_fn is not None:
         ordered_cols += ["Azimuth", "Elevation"]
         nav_x = result.pop("NAV_X")
         nav_y = result.pop("NAV_Y")
         nav_z = result.pop("NAV_Z")
         result["Azimuth"], result["Elevation"], _ = pm.ecef2aer(
-            nav_x, nav_y, nav_z, result["RX_LAT"], result["RX_LON"], rx_alt, deg=True
+            nav_x, nav_y, nav_z, rx_lat, rx_lon, rx_alt, deg=True
         )
     ordered_cols += sorted(codes)
+
+    header = RinexObsHeader(
+        version=result.pop("Version"),
+        constellation=result.pop("Constellation"),
+        marker_name=result["Station"],
+        marker_type=result.pop("MarkerType"),
+        rx_ecef=(rx_x, rx_y, rx_z),
+        rx_geodetic=(float(rx_lat), float(rx_lon), float(rx_alt)),
+        sampling_interval=result.pop("SamplingInterval"),
+        leap_seconds=result.pop("LeapSeconds"),
+    )
 
     df = (
         pl.DataFrame(result)
@@ -172,6 +221,6 @@ def read_rinex_obs(
     )
 
     if lazy:
-        return df
+        return header, df
     else:
-        return df.collect()
+        return header, df.collect()

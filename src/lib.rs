@@ -177,13 +177,13 @@ fn pivot_observations(
 
 /// Read RINEX observation file (and optional navigation file) and return a Polars DataFrame.
 /// # Arguments
-/// * `obs_fn` - Vector of paths to RINEX observation files.
-/// * `nav_fn` - Optional vector of paths to RINEX navigation files.
-/// * `constellations` - Optional string of constellation codes to filter (e.g., "CGE").
-/// * `t_lim` - Tuple of optional start and end time strings for filtering epochs.
-/// * `codes` - Optional vector of observable codes to include.
+/// - `obs_fn` - Vector of paths to RINEX observation files.
+/// - `nav_fn` - Optional vector of paths to RINEX navigation files.
+/// - `constellations` - Optional string of constellation codes to filter (e.g., "CGE").
+/// - `t_lim` - Tuple of optional start and end time strings for filtering epochs.
+/// - `codes` - Optional vector of observable codes to include.
 /// # Returns
-/// * `PyResult<PyDict>` - Dictionary containing the observation data.
+/// - `PyResult<PyDict>` - Dictionary containing the observation data.
 #[pyfunction]
 fn _read_obs(
     py: Python<'_>,
@@ -208,21 +208,35 @@ fn _read_obs(
     let t1 = epoch_from_str(t_lim.0.as_deref());
     let t2 = epoch_from_str(t_lim.1.as_deref());
 
-    let station_name = obs_rnx
-        .header
-        .geodetic_marker
-        .clone()
-        .and_then(|m| Some(m.name))
+    let header = &obs_rnx.header;
+    let version = format!("{}.{:02}", header.version.major, header.version.minor);
+    let constellation = header.constellation.and_then(|c| Some(c.to_string()));
+    let sampling_interval = header
+        .sampling_interval
+        .and_then(|duration| Some(duration.to_seconds() as u32));
+    let leap_seconds = header.leap.and_then(|leap| Some(leap.leap));
+    let (x_m, y_m, z_m) = header.rx_position.unwrap_or((f64::NAN, f64::NAN, f64::NAN));
+
+    let marker = header.geodetic_marker.as_ref();
+    let marker_name = marker
+        .and_then(|m| Some(m.name.clone()))
         .unwrap_or("Unknown".to_string());
-    let (x_m, y_m, z_m) = obs_rnx
-        .header
-        .rx_position
-        .unwrap_or((f64::NAN, f64::NAN, f64::NAN));
+    let marker_type = marker.and_then(|m| m.marker_type.and_then(|mt| Some(mt.to_string())));
+
     let (epochs, svs, codes, columns) =
         pivot_observations(&obs_rnx, &const_filter, (t1, t2), codes.as_ref());
 
     // construct result dictionary
     let result_dict = PyDict::new(py);
+    result_dict.set_item("Version", version)?;
+    result_dict.set_item("Constellation", constellation)?;
+    result_dict.set_item("SamplingInterval", sampling_interval)?;
+    result_dict.set_item("LeapSeconds", leap_seconds)?;
+    result_dict.set_item("Station", marker_name)?;
+    result_dict.set_item("MarkerType", marker_type)?;
+    result_dict.set_item("RX_X", x_m)?;
+    result_dict.set_item("RX_Y", y_m)?;
+    result_dict.set_item("RX_Z", z_m)?;
     result_dict.set_item(
         "Time",
         epochs
@@ -234,10 +248,6 @@ fn _read_obs(
         "PRN",
         svs.iter().map(|sv| sv.to_string()).collect::<Vec<String>>(),
     )?;
-    result_dict.set_item("Station", station_name)?;
-    result_dict.set_item("RX_X", x_m)?;
-    result_dict.set_item("RX_Y", y_m)?;
-    result_dict.set_item("RX_Z", z_m)?;
     for (code, col) in codes.iter().zip(columns.iter()) {
         result_dict.set_item(code, col.clone())?;
     }

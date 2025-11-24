@@ -20,6 +20,7 @@ ALL_CONSTELLATIONS = {
     "I": "IRNSS",
     "S": "SBAS",
 }
+"""All supported GNSS constellations for RINEX file reading."""
 
 
 @dataclass
@@ -27,29 +28,29 @@ class RinexObsHeader:
     """Dataclass for RINEX observation file header metadata."""
 
     version: str
-    "RINEX version."
+    """RINEX version."""
 
     constellation: str | None
-    "Constellation for which the RINEX file contains observations."
+    """Constellation for which the RINEX file contains observations."""
 
     marker_name: str
-    "Marker name."
+    """Marker name."""
 
     marker_type: str | None
-    "Marker type."
+    """Marker type."""
 
     rx_ecef: tuple[float, float, float]
-    "Approximate receiver position in ECEF coordinates (X, Y, Z) in meters."
+    """Approximate receiver position in ECEF coordinates (X, Y, Z) in meters."""
 
     rx_geodetic: tuple[float, float, float]
     """Approximate receiver position in geodetic coordinates (latitude, longitude,
         altitude) in degrees and meters."""
 
     sampling_interval: int | None
-    "Sampling interval in seconds."
+    """Sampling interval in seconds."""
 
     leap_seconds: int | None
-    "Number of leap seconds."
+    """Number of leap seconds."""
 
 
 def _handle_fn(fn: str | Path | Iterable[str | Path]) -> list[str]:

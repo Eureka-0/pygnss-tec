@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [build-system]
-requires = ["maturin>=1.9"]
+requires = ["maturin>=1.9,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]

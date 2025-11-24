@@ -80,22 +80,26 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Build wheels
+      - name: Setup Python 3.13
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           architecture: ${{ matrix.target }}
-      - uses: PyO3/maturin-action@v1
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           args: --release --out dist
 
-      - name: Build free-threaded wheels
+      - name: Setup Python 3.13t
         uses: actions/setup-python@v6
         with:
           python-version: "3.13t"
           architecture: ${{ matrix.target }}
-      - uses: PyO3/maturin-action@v1
+
+      - name: Build free-threaded wheels
+        uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           args: --release --out dist -i python3.13t
@@ -117,20 +121,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Build wheels
+      - name: Setup Python 3.13
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - uses: PyO3/maturin-action@v1
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           args: --release --out dist -i python3.13
 
-      - name: Build free-threaded wheels
+      - name: Setup Python 3.13t
         uses: actions/setup-python@v5
         with:
           python-version: "3.13t"
-      - uses: PyO3/maturin-action@v1
+
+      - name: Build free-threaded wheels
+        uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           args: --release --out dist -i python3.13t

@@ -6,7 +6,8 @@ from typing import Iterable
 import polars as pl
 import polars.selectors as cs
 
-from .constants import C1_CODES, C2_CODES, SIGNAL_FREQ, SUPPORTED_CONSTELLATIONS
+from ..rinex import read_rinex_obs
+from .constants import C1_CODES, C2_CODES, SIGNAL_FREQ, SUPPORTED_CONSTELLATIONS, c
 
 CODE_FREQ_MAP = {
     "C_1": SIGNAL_FREQ["C"]["B1"],
@@ -21,8 +22,8 @@ CODE_FREQ_MAP = {
 }
 
 
-def _resolve_observations(df: pl.LazyFrame) -> pl.LazyFrame:
-    columns = df.collect_schema().names()
+def _resolve_observations(lf: pl.LazyFrame) -> pl.LazyFrame:
+    columns = lf.collect_schema().names()
     valid_c1_codes = {
         constellation: list(filter(lambda c: c in columns, codes))
         for constellation, codes in C1_CODES.items()
@@ -58,7 +59,7 @@ def _resolve_observations(df: pl.LazyFrame) -> pl.LazyFrame:
         )
 
     return (
-        df.with_columns(
+        lf.with_columns(
             resolve_value(valid_c1_codes).alias("C1"),
             resolve_value(valid_c2_codes).alias("C2"),
             resolve_code(valid_c1_codes).alias("C1_Code"),
@@ -73,7 +74,7 @@ def _resolve_observations(df: pl.LazyFrame) -> pl.LazyFrame:
     )
 
 
-def _map_frequencies(df: pl.LazyFrame) -> pl.LazyFrame:
+def _map_frequencies(lf: pl.LazyFrame) -> pl.LazyFrame:
     def freq_col(code_col: str) -> pl.Expr:
         expr = pl.when(False).then(None)
         for constellation in SUPPORTED_CONSTELLATIONS:
@@ -86,7 +87,7 @@ def _map_frequencies(df: pl.LazyFrame) -> pl.LazyFrame:
             )
         return expr
 
-    return df.with_columns(
+    return lf.with_columns(
         freq_col("C1_Code").alias("C1_Freq"),
         freq_col("C2_Code").alias("C2_Freq"),
         freq_col("L1_Code").alias("L1_Freq"),
@@ -99,4 +100,52 @@ def calc_tec(
     nav_fn: str | Path | Iterable[str | Path],
     constellations: str | None = None,
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
-): ...
+) -> pl.LazyFrame:
+    if constellations is not None:
+        constellations = constellations.upper()
+        for con in constellations:
+            if con not in SUPPORTED_CONSTELLATIONS:
+                raise NotImplementedError(
+                    f"Constellation '{con}' is not supported for TEC calculation. "
+                    f"Supported constellations are: {SUPPORTED_CONSTELLATIONS}"
+                )
+
+    header, lf = read_rinex_obs(obs_fn, nav_fn, constellations, t_lim, lazy=True)
+    lf = _resolve_observations(lf)
+    lf = _map_frequencies(lf)
+
+    def multiplier(f1: pl.Expr, f2: pl.Expr) -> pl.Expr:
+        return f1**2 * f2**2 / (f1**2 - f2**2) / 40.3e16
+
+    lf = (
+        lf.with_columns(
+            # sTEC from pseudorange, in TECU
+            (pl.col("C2") - pl.col("C1"))
+            .mul(multiplier(pl.col("C1_Freq"), pl.col("C2_Freq")))
+            .alias("sTEC_g"),
+            # sTEC from carrier phase, in TECU
+            (pl.col("L1") / pl.col("L1_Freq") - pl.col("L2") / pl.col("L2_Freq"))
+            .mul(c * multiplier(pl.col("L1_Freq"), pl.col("L2_Freq")))
+            .alias("sTEC_p"),
+        )
+        .drop("C1", "C2", "L1", "L2", "C1_Freq", "C2_Freq", "L1_Freq", "L2_Freq")
+        .with_columns(
+            (pl.col("sTEC_g") - pl.col("sTEC_p")).alias("Raw_Offset"),
+            pl.col("Elevation").radians().sin().pow(2).alias("Weight"),
+        )
+        .with_columns(
+            pl.col("Raw_Offset")
+            .mul(pl.col("Weight"))
+            .sum()
+            .truediv(pl.col("Weight").sum())
+            .over("PRN")
+            .alias("Offset")
+        )
+        .drop("Raw_Offset", "Weight")
+        .with_columns(
+            # levelled sTEC, in TECU
+            (pl.col("sTEC_p") + pl.col("Offset")).alias("sTEC")
+        )
+    )
+
+    return lf

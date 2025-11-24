@@ -22,11 +22,12 @@ dependencies = [
 ]
 
 [build-system]
-requires = ["maturin>=1.8"]
+requires = ["maturin>=1.9"]
 build-backend = "maturin"
 
 [tool.maturin]
 bindings = "pyo3"
+compatibility = "pypi"
 module-name = "gnss_tec._core"
 python-packages = ["gnss_tec"]
 

@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Literal, overload
 
+import numpy as np
 import polars as pl
 import polars.selectors as cs
 
 from ..rinex import read_rinex_obs
-from .constants import C1_CODES, C2_CODES, SIGNAL_FREQ, SUPPORTED_CONSTELLATIONS, c
+from .constants import (
+    C1_CODES,
+    C2_CODES,
+    DEFAULT_IPP_HEIGHT,
+    SIGNAL_FREQ,
+    SUPPORTED_CONSTELLATIONS,
+    Re,
+    c,
+)
 
 CODE_FREQ_MAP = {
     "C_1": SIGNAL_FREQ["C"]["B1"],
@@ -95,12 +104,96 @@ def _map_frequencies(lf: pl.LazyFrame) -> pl.LazyFrame:
     ).drop("C1_Code", "C2_Code", "L1_Code", "L2_Code")
 
 
+def _single_layer_model(
+    azimuth: pl.Expr, elevation: pl.Expr, rx_lat_deg: pl.Expr, rx_lon_deg: pl.Expr
+) -> tuple[pl.Expr, pl.Expr, pl.Expr]:
+    """
+    Calculate the mapping function and Ionospheric Pierce Point (IPP) latitude and
+        longitude using the Single Layer Model (SLM).
+
+    Args:
+        azimuth (pl.Expr): Satellite azimuth angle in degrees.
+        elevation (pl.Expr): Satellite elevation angle in degrees.
+        rx_lat_deg (pl.Expr): Receiver latitude in degrees.
+        rx_lon_deg (pl.Expr): Receiver longitude in degrees.
+
+    Returns:
+        tuple[pl.Expr, pl.Expr, pl.Expr]: A tuple containing:
+            - Mapping function (pl.Expr)
+            - IPP latitude in degrees (pl.Expr)
+            - IPP longitude in degrees (pl.Expr)
+    """
+    az = azimuth.radians()
+    el = elevation.radians()
+    rx_lat = rx_lat_deg.radians()
+    rx_lon = rx_lon_deg.radians()
+
+    # mapping function
+    sin_beta = Re * el.cos() / (Re + DEFAULT_IPP_HEIGHT)
+    mf = sin_beta.arcsin().cos().pow(-1)
+
+    # IPP latitude and longitude, in radians
+    psi = np.pi / 2 - el - sin_beta.arcsin()
+    ipp_lat = (rx_lat.sin() * psi.cos() + rx_lat.cos() * psi.sin() * az.cos()).arcsin()
+    ipp_lon = rx_lon + (psi.sin() * az.sin() / ipp_lat.cos()).arcsin()
+
+    return mf, ipp_lat.degrees(), ipp_lon.degrees()
+
+
+@overload
 def calc_tec(
     obs_fn: str | Path | Iterable[str | Path],
     nav_fn: str | Path | Iterable[str | Path],
     constellations: str | None = None,
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
-) -> pl.LazyFrame:
+    *,
+    lazy: Literal[True] = True,
+) -> pl.LazyFrame: ...
+
+
+@overload
+def calc_tec(
+    obs_fn: str | Path | Iterable[str | Path],
+    nav_fn: str | Path | Iterable[str | Path],
+    constellations: str | None = None,
+    t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
+    *,
+    lazy: Literal[False],
+) -> pl.DataFrame: ...
+
+
+def calc_tec(
+    obs_fn: str | Path | Iterable[str | Path],
+    nav_fn: str | Path | Iterable[str | Path],
+    constellations: str | None = None,
+    t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
+    *,
+    lazy: bool = True,
+) -> pl.LazyFrame | pl.DataFrame:
+    """
+    Calculate the Total Electron Content (TEC) from RINEX observation and navigation files.
+
+    Args:
+        obs_fn (str | Path | Iterable[str | Path]): Path(s) to the RINEX observation
+            file(s). These files must be from the same station, otherwise the output
+            DataFrame will be incorrect.
+        nav_fn (str | Path | Iterable[str | Path]): Path(s) to the RINEX navigation
+            file(s).
+        constellations (str | None, optional): Constellations to consider. If None, all
+            supported constellations are used. Defaults to None.
+        t_lim (tuple[str | None, str | None] | list[str | None] | None, optional): Time
+            limits for TEC calculation. Should be a tuple or list with two
+            elements representing the start and end times. Use None for no limit on
+            either end. Timezone can be specified using ISO 8601 format (e.g.,
+            '2023-01-01 00:00:00Z', '2023-01-01 00:00:00+0800', as long as
+            `pd.to_datetime` can parse it). Additionally, 'GPST' is also supported
+            (e.g., '2023-01-01 00:00:00 GPST'). If no timezone is provided, UTC is
+            assumed. Defaults to None.
+        lazy (bool, optional): Whether to return a `polars.LazyFrame`. Defaults to True.
+
+    Returns:
+        pl.LazyFrame: A lazy frame containing the calculated TEC values.
+    """
     if constellations is not None:
         constellations = constellations.upper()
         for con in constellations:
@@ -111,6 +204,11 @@ def calc_tec(
                 )
 
     header, lf = read_rinex_obs(obs_fn, nav_fn, constellations, t_lim, lazy=True)
+    rx_lat_deg, rx_lon_deg, _ = header.rx_geodetic
+    mf, ipp_lat, ipp_lon = _single_layer_model(
+        pl.col("Azimuth"), pl.col("Elevation"), pl.lit(rx_lat_deg), pl.lit(rx_lon_deg)
+    )
+
     lf = _resolve_observations(lf)
     lf = _map_frequencies(lf)
 
@@ -146,6 +244,18 @@ def calc_tec(
             # levelled sTEC, in TECU
             (pl.col("sTEC_p") + pl.col("Offset")).alias("sTEC")
         )
+        .drop("sTEC_g", "sTEC_p", "Offset")
+        .with_columns(
+            # vTEC, in TECU
+            (pl.col("sTEC") / mf).alias("vTEC"),
+            # IPP Latitude in degrees
+            ipp_lat.alias("IPP_Lat"),
+            # IPP Longitude in degrees
+            ipp_lon.alias("IPP_Lon"),
+        )
     )
 
-    return lf
+    if lazy:
+        return lf
+    else:
+        return lf.collect()

@@ -147,7 +147,7 @@ def calc_tec(
     constellations: str | None = None,
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     *,
-    lazy: Literal[True] = True,
+    lazy: Literal[True],
 ) -> pl.LazyFrame: ...
 
 
@@ -158,7 +158,7 @@ def calc_tec(
     constellations: str | None = None,
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     *,
-    lazy: Literal[False],
+    lazy: Literal[False] = False,
 ) -> pl.DataFrame: ...
 
 
@@ -168,7 +168,7 @@ def calc_tec(
     constellations: str | None = None,
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     *,
-    lazy: bool = True,
+    lazy: bool = False,
 ) -> pl.LazyFrame | pl.DataFrame:
     """
     Calculate the Total Electron Content (TEC) from RINEX observation and navigation files.
@@ -189,10 +189,12 @@ def calc_tec(
             `pd.to_datetime` can parse it). Additionally, 'GPST' is also supported
             (e.g., '2023-01-01 00:00:00 GPST'). If no timezone is provided, UTC is
             assumed. Defaults to None.
-        lazy (bool, optional): Whether to return a `polars.LazyFrame`. Defaults to True.
+        lazy (bool, optional): Whether to return a `polars.LazyFrame`. Defaults to
+            False.
 
     Returns:
-        pl.LazyFrame: A lazy frame containing the calculated TEC values.
+        (pl.LazyFrame | pl.DataFrame): A LazyFrame or DataFrame containing the
+            calculated TEC values.
     """
     if constellations is not None:
         constellations = constellations.upper()

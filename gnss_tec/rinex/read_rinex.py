@@ -129,9 +129,8 @@ def read_rinex_obs(
             RINEX navigation file(s). If provided, azimuth and elevation angles will be
             computed. Defaults to None.
         constellations (str | None, optional): String of constellation codes to filter
-            by. Valid codes are: 'C' for BDS, 'G' for GPS, 'E' for Galileo, 'R' for
-            GLONASS, 'J' for QZSS, 'I' for IRNSS, 'S' for SBAS. If None, all
-            constellations are included. Defaults to None.
+            by. If None, all supported constellations are included. See
+            `gnss_tec.rinex.ALL_CONSTELLATIONS` for valid codes. Defaults to None.
         t_lim (tuple[str | None, str | None] | list[str | None] | None, optional): Time
             limits for filtering observations. Should be a tuple or list with two
             elements representing the start and end times. Use None for no limit on
@@ -143,8 +142,7 @@ def read_rinex_obs(
         codes (Iterable[str] | None, optional): Specific observation codes to extract
             (e.g., ['C1C', 'L1C']). If None, all available observation types are
             included. Defaults to None.
-        lazy (bool, optional): If True, returns a Polars LazyFrame for deferred
-            computation. If False, returns a Polars DataFrame. Defaults to False.
+        lazy (bool, optional): Whether to return a `polars.LazyFrame`. Defaults to True.
 
     Returns:
         (RinexObsHeader, pl.DataFrame | pl.LazyFrame): A Dataclass containing metadata from the RINEX observation file header and a DataFrame or LazyFrame containing the RINEX observation data with following columns.

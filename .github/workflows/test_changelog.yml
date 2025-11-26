@@ -49,4 +49,4 @@ jobs:
       - name: Display extracted changelog
         run: |
           echo "Extracted Unreleased changelog:"
-          echo "${{ steps.extract_changelog.outputs.body }}"
+          printf '%s\n' "${{ steps.extract_changelog.outputs.body }}"

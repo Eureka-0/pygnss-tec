@@ -60,7 +60,7 @@ def _handle_fn(fn: str | Path | Iterable[str | Path]) -> list[str]:
         fn_list = [str(f) for f in fn]
     else:
         raise TypeError(
-            f"The file path must be a str, Path, or an iterable of str/Path, not {fn}."
+            f"The file path must be a str, Path, or Iterable of str/Path, not {fn}."
         )
 
     for f in fn_list:

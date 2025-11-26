@@ -6,6 +6,10 @@ on:
       # Trigger on version tags like v1.0.0
       - v*
 
+env:
+  PYTHON_VERSION: "3.13"
+  FREE_THREADED_PYTHON_VERSION: "3.13t"
+
 jobs:
   release:
     name: Create Github release
@@ -40,14 +44,14 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.13
+          args: --release --out dist -i python${{ env.PYTHON_VERSION }}
           manylinux: manylinux_2_28
 
       - name: Build free-threaded wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.13t
+          args: --release --out dist -i python${{ env.FREE_THREADED_PYTHON_VERSION }}
           manylinux: manylinux_2_28
 
       - name: Upload wheels
@@ -72,14 +76,14 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.13
+          args: --release --out dist -i python${{ env.PYTHON_VERSION }}
           manylinux: musllinux_1_2
 
       - name: Build free-threaded wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.13t
+          args: --release --out dist -i python${{ env.FREE_THREADED_PYTHON_VERSION }}
           manylinux: musllinux_1_2
 
       - name: Upload wheels
@@ -100,10 +104,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Setup Python 3.13
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: ${{ env.PYTHON_VERSION }}
           architecture: ${{ matrix.target }}
 
       - name: Build wheels
@@ -112,17 +116,17 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --out dist
 
-      - name: Setup Python 3.13t
+      - name: Setup Python ${{ env.FREE_THREADED_PYTHON_VERSION }}
         uses: actions/setup-python@v6
         with:
-          python-version: "3.13t"
+          python-version: ${{ env.FREE_THREADED_PYTHON_VERSION }}
           architecture: ${{ matrix.target }}
 
       - name: Build free-threaded wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.13t
+          args: --release --out dist -i python${{ env.FREE_THREADED_PYTHON_VERSION }}
 
       - name: Upload wheels
         uses: actions/upload-artifact@v5
@@ -142,27 +146,27 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Setup Python 3.13
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.13
+          args: --release --out dist -i python${{ env.PYTHON_VERSION }}
 
-      - name: Setup Python 3.13t
+      - name: Setup Python ${{ env.FREE_THREADED_PYTHON_VERSION }}
         uses: actions/setup-python@v6
         with:
-          python-version: "3.13t"
+          python-version: ${{ env.FREE_THREADED_PYTHON_VERSION }}
 
       - name: Build free-threaded wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.13t
+          args: --release --out dist -i python${{ env.FREE_THREADED_PYTHON_VERSION }}
 
       - name: Upload wheels
         uses: actions/upload-artifact@v5

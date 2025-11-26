@@ -1,0 +1,48 @@
+name: Test Changelog Extraction
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  test_changelog:
+    name: Test Changelog Extraction
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Extract Unreleased section from CHANGELOG.md
+        id: extract_changelog
+        shell: bash
+        run: |
+          body=$(awk '
+          /^## \[Unreleased\]/ { flag=1; next }
+          /^## \[/ && flag { exit }
+
+          flag {
+            lines[++n] = $0
+          }
+
+          END {
+            if (n == 0) exit 0
+
+            start = 1
+            while (start <= n && lines[start] ~ /^[[:space:]]*$/) start++
+
+            end = n
+            while (end >= start && lines[end] ~ /^[[:space:]]*$/) end--
+
+            if (end < start) exit 0
+
+            for (i = start; i <= end; i++) {
+              print lines[i]
+            }
+          }' CHANGELOG.md)
+
+          echo "body=$body" >> $GITHUB_OUTPUT
+
+      - name: Display extracted changelog
+        run: |
+          echo "Extracted Unreleased changelog:"
+          echo "${{ steps.extract_changelog.outputs.body }}"

@@ -20,6 +20,7 @@ ALL_CONSTELLATIONS = {
     "I": "IRNSS",
     "S": "SBAS",
 }
+"""All supported GNSS constellations for RINEX file reading."""
 
 
 @dataclass
@@ -27,29 +28,29 @@ class RinexObsHeader:
     """Dataclass for RINEX observation file header metadata."""
 
     version: str
-    "RINEX version."
+    """RINEX version."""
 
     constellation: str | None
-    "Constellation for which the RINEX file contains observations."
+    """Constellation for which the RINEX file contains observations."""
 
     marker_name: str
-    "Marker name."
+    """Marker name."""
 
     marker_type: str | None
-    "Marker type."
+    """Marker type."""
 
     rx_ecef: tuple[float, float, float]
-    "Approximate receiver position in ECEF coordinates (X, Y, Z) in meters."
+    """Approximate receiver position in ECEF coordinates (X, Y, Z) in meters."""
 
     rx_geodetic: tuple[float, float, float]
     """Approximate receiver position in geodetic coordinates (latitude, longitude,
         altitude) in degrees and meters."""
 
     sampling_interval: int | None
-    "Sampling interval in seconds."
+    """Sampling interval in seconds."""
 
     leap_seconds: int | None
-    "Number of leap seconds."
+    """Number of leap seconds."""
 
 
 def _handle_fn(fn: str | Path | Iterable[str | Path]) -> list[str]:
@@ -88,32 +89,35 @@ def _handle_t_str(t_str: str | None) -> str | None:
 @overload
 def read_rinex_obs(
     obs_fn: str | Path | Iterable[str | Path],
-    lazy: Literal[True],
     nav_fn: str | Path | Iterable[str | Path] | None = None,
     constellations: str | None = None,
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     codes: Iterable[str] | None = None,
+    *,
+    lazy: Literal[True],
 ) -> tuple[RinexObsHeader, pl.LazyFrame]: ...
 
 
 @overload
 def read_rinex_obs(
     obs_fn: str | Path | Iterable[str | Path],
-    lazy: Literal[False] = False,
     nav_fn: str | Path | Iterable[str | Path] | None = None,
     constellations: str | None = None,
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     codes: Iterable[str] | None = None,
+    *,
+    lazy: Literal[False] = False,
 ) -> tuple[RinexObsHeader, pl.DataFrame]: ...
 
 
 def read_rinex_obs(
     obs_fn: str | Path | Iterable[str | Path],
-    lazy: bool = False,
     nav_fn: str | Path | Iterable[str | Path] | None = None,
     constellations: str | None = None,
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     codes: Iterable[str] | None = None,
+    *,
+    lazy: bool = False,
 ) -> tuple[RinexObsHeader, pl.DataFrame | pl.LazyFrame]:
     """Read RINEX observation file into a Polars DataFrame.
 
@@ -121,15 +125,12 @@ def read_rinex_obs(
         obs_fn (str | Path | Iterable[str | Path]): Path(s) to the RINEX observation
             file(s). These files must be from the same station, otherwise the output
             DataFrame will be incorrect.
-        lazy (bool, optional): If True, returns a Polars LazyFrame for deferred
-            computation. If False, returns a Polars DataFrame. Defaults to False.
         nav_fn (str | Path | Iterable[str | Path] | None, optional): Path(s) to the
             RINEX navigation file(s). If provided, azimuth and elevation angles will be
             computed. Defaults to None.
         constellations (str | None, optional): String of constellation codes to filter
-            by. Valid codes are: 'C' for BDS, 'G' for GPS, 'E' for Galileo, 'R' for
-            GLONASS, 'J' for QZSS, 'I' for IRNSS, 'S' for SBAS. If None, all
-            constellations are included. Defaults to None.
+            by. If None, all supported constellations are included. See
+            `gnss_tec.rinex.ALL_CONSTELLATIONS` for valid codes. Defaults to None.
         t_lim (tuple[str | None, str | None] | list[str | None] | None, optional): Time
             limits for filtering observations. Should be a tuple or list with two
             elements representing the start and end times. Use None for no limit on
@@ -141,6 +142,7 @@ def read_rinex_obs(
         codes (Iterable[str] | None, optional): Specific observation codes to extract
             (e.g., ['C1C', 'L1C']). If None, all available observation types are
             included. Defaults to None.
+        lazy (bool, optional): Whether to return a `polars.LazyFrame`. Defaults to True.
 
     Returns:
         (RinexObsHeader, pl.DataFrame | pl.LazyFrame): A Dataclass containing metadata from the RINEX observation file header and a DataFrame or LazyFrame containing the RINEX observation data with following columns.

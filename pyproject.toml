@@ -1,7 +1,7 @@
 [project]
 name = "pygnss-tec"
 version = "0.1.0"
-description = "A Python package for GNSS TEC calculation and analysis with Rust-accelerated performance."
+description = "A Python package for GNSS RINEX file reading and total electron content (TEC) calculation with Rust-accelerated performance."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Xinlong Liu", email = "dblxl33236@gmail.com" }]
@@ -35,4 +35,9 @@ python-packages = ["gnss_tec"]
 addopts = ["--log-cli-level=INFO"]
 
 [dependency-groups]
-dev = ["ipykernel>=6.31.0", "pytest>=8.4.2"]
+dev = [
+    "ipykernel>=6.31.0",
+    "matplotlib>=3.9.4",
+    "pygithub>=2.8.1",
+    "pytest>=8.4.2",
+]

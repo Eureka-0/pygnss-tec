@@ -42,7 +42,9 @@ jobs:
             }
           }' CHANGELOG.md)
 
-          echo "body=$body" >> $GITHUB_OUTPUT
+          echo 'body<<EOF' >> $GITHUB_OUTPUT
+          echo "$body" >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
 
       - name: Display extracted changelog
         run: |

@@ -142,7 +142,8 @@ def read_rinex_obs(
         codes (Iterable[str] | None, optional): Specific observation codes to extract
             (e.g., ['C1C', 'L1C']). If None, all available observation types are
             included. Defaults to None.
-        lazy (bool, optional): Whether to return a `polars.LazyFrame`. Defaults to True.
+        lazy (bool, optional): Whether to return a `polars.LazyFrame`. Defaults to
+            False.
 
     Returns:
         (RinexObsHeader, pl.DataFrame | pl.LazyFrame): A Dataclass containing metadata from the RINEX observation file header and a DataFrame or LazyFrame containing the RINEX observation data with following columns.

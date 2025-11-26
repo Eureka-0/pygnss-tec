@@ -1,7 +1,7 @@
 # PyGNSS-TEC
 
 [![PyPI - Version](https://img.shields.io/pypi/v/pygnss-tec)](https://pypi.org/project/pygnss-tec/)
-![Supported Python Versions](https://img.shields.io/badge/python-%3E%3D3.9-blue)
+![Supported Python Versions](https://img.shields.io/badge/python-%3E%3D3.10-blue)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 [![Pytest](https://github.com/Eureka-0/pygnss-tec/actions/workflows/pytest.yml/badge.svg)](https://github.com/Eureka-0/pygnss-tec/actions/workflows/pytest.yml)
 

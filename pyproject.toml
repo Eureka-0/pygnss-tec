@@ -44,4 +44,5 @@ dev = [
     "matplotlib>=3.9.4",
     "pygithub>=2.8.1",
     "pytest>=8.4.2",
+    "ruff>=0.14.6",
 ]

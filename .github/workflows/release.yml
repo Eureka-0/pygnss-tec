@@ -7,6 +7,23 @@ on:
       - v*
 
 jobs:
+  release:
+    name: Create Github release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: CHANGELOG.md
+          prerelease: false
+          draft: true
+
   linux:
     name: Build wheels for Linux
     runs-on: ubuntu-latest

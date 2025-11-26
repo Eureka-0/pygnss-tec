@@ -21,6 +21,9 @@ dependencies = [
     "pymap3d>=3.2.0",
 ]
 
+[project.urls]
+repository = "https://github.com/Eureka-0/pygnss-tec.git"
+
 [build-system]
 requires = ["maturin>=1.9,<2.0"]
 build-backend = "maturin"

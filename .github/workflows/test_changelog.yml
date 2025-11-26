@@ -1,7 +1,9 @@
 name: Test Changelog Extraction
 
 on:
-  workflow_dispatch: {}
+  push:
+    branches:
+      - develop/dcb-correction
 
 jobs:
   test_changelog:

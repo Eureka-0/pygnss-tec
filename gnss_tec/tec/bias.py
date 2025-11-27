@@ -1,5 +1,6 @@
 import gzip
 import io
+import re
 from pathlib import Path
 from typing import Iterable, Literal, overload
 
@@ -9,32 +10,43 @@ import polars as pl
 
 def _read_bias_file(fn: str | Path) -> pl.LazyFrame:
     with gzip.open(fn, "rt") as f:
-        for line in f:
-            if "+BIAS/SOLUTION" in line:
-                header_str = next(f).rstrip("\n")
-                break
-        else:
-            raise ValueError("Header '+BIAS/SOLUTION' not found in file.")
+        lines = f.readlines()
 
-        data_lines = []
-        for line in f:
-            if "-BIAS/SOLUTION" in line:
-                break
-            data_lines.append(line)
+    if not lines:
+        raise ValueError(f"Bias file {fn} is empty.")
 
-    header_list = header_str.split()
-    cols = [col.strip("*_") for col in header_list]
-    colspecs = []
-    for col in header_list:
-        start_idx = header_str.index(col)
-        end_idx = start_idx + len(col)
-        colspecs.append((start_idx, end_idx))
+    try:
+        header_marker_idx = next(
+            i for i, line in enumerate(lines) if "+BIAS/SOLUTION" in line
+        )
+    except StopIteration:
+        raise ValueError("Header '+BIAS/SOLUTION' not found in the file.")
 
-    buf = io.StringIO("".join(data_lines))
+    header_line_idx = header_marker_idx + 1
+    if header_line_idx >= len(lines):
+        raise ValueError("No header line found after '+BIAS/SOLUTION' marker.")
+
+    header_str = lines[header_line_idx].rstrip("\n")
+
+    footer_line_idx = None
+    for i in range(len(lines) - 1, header_line_idx, -1):
+        if "-BIAS/SOLUTION" in lines[i]:
+            footer_line_idx = i
+            break
+
+    if footer_line_idx is None:
+        footer_line_idx = len(lines)
+
+    if footer_line_idx <= header_line_idx + 1:
+        buf = io.StringIO("")
+    else:
+        buf = io.StringIO("".join(lines[header_line_idx + 1 : footer_line_idx]))
+
+    colspecs = [(m.start(), m.end()) for m in re.finditer(r"\S+", header_str)]
+    cols = [col.strip("*_") for col in header_str.split()]
     df = (
         pl.from_pandas(pd.read_fwf(buf, colspecs=colspecs, names=cols, header=None))
         .lazy()
-        .drop_nulls("UNIT")
         .drop("BIAS", "SVN")
     )
 

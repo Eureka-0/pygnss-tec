@@ -94,6 +94,7 @@ def read_rinex_obs(
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     codes: Iterable[str] | None = None,
     *,
+    pivot: bool = True,
     lazy: Literal[True],
 ) -> tuple[RinexObsHeader, pl.LazyFrame]: ...
 
@@ -106,6 +107,7 @@ def read_rinex_obs(
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     codes: Iterable[str] | None = None,
     *,
+    pivot: bool = True,
     lazy: Literal[False] = False,
 ) -> tuple[RinexObsHeader, pl.DataFrame]: ...
 
@@ -117,6 +119,7 @@ def read_rinex_obs(
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     codes: Iterable[str] | None = None,
     *,
+    pivot: bool = True,
     lazy: bool = False,
 ) -> tuple[RinexObsHeader, pl.DataFrame | pl.LazyFrame]:
     """Read RINEX observation file into a Polars DataFrame.
@@ -142,6 +145,8 @@ def read_rinex_obs(
         codes (Iterable[str] | None, optional): Specific observation codes to extract
             (e.g., ['C1C', 'L1C']). If None, all available observation types are
             included. Defaults to None.
+        pivot (bool, optional): Whether to pivot the DataFrame so that each observation
+            type has its own column. Defaults to True.
         lazy (bool, optional): Whether to return a `polars.LazyFrame`. Defaults to
             False.
 
@@ -186,6 +191,7 @@ def read_rinex_obs(
         constellations=constellations,
         t_lim=tuple(t_lim),
         codes=codes if codes is None else list(set(codes)),
+        pivot=pivot,
     )
     codes = list(filter(lambda x: re.match(r"[A-Z]\d{1}[A-Z]$", x), result.keys()))
     ordered_cols = ["Time", "Station", "PRN"]
@@ -201,7 +207,10 @@ def read_rinex_obs(
         result["Azimuth"], result["Elevation"], _ = pm.ecef2aer(
             nav_x, nav_y, nav_z, rx_lat, rx_lon, rx_alt, deg=True
         )
-    ordered_cols += sorted(codes)
+    if pivot:
+        ordered_cols += sorted(codes)
+    else:
+        ordered_cols += ["Code", "Value"]
 
     header = RinexObsHeader(
         version=result.pop("Version"),

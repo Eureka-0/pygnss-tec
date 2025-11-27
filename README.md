@@ -3,7 +3,7 @@
 [![PyPI - Version](https://img.shields.io/pypi/v/pygnss-tec)](https://pypi.org/project/pygnss-tec/)
 ![Supported Python Versions](https://img.shields.io/badge/python-%3E%3D3.10-blue)
 ![License](https://img.shields.io/badge/license-MIT-blue)
-[![Pytest](https://github.com/Eureka-0/pygnss-tec/actions/workflows/pytest.yml/badge.svg)](https://github.com/Eureka-0/pygnss-tec/actions/workflows/pytest.yml)
+[![Test](https://github.com/Eureka-0/pygnss-tec/actions/workflows/test.yml/badge.svg)](https://github.com/Eureka-0/pygnss-tec/actions/workflows/test.yml)
 
 PyGNSS-TEC is a high-performance Python package leveraging Rust acceleration, designed for processing and analyzing Total Electron Content (TEC) data derived from Global Navigation Satellite System (GNSS) observations. The package provides tools for RINEX file reading, TEC calculation, and DCB correction to support ionospheric studies.
 

@@ -1,13 +1,67 @@
-name: Build and publish to PyPI
+name: Release and Publish
 
 on:
   push:
     tags:
-      # Trigger on version tags like v1.0.0
+      # Trigger on version tags like v1.2.3
       - v*
 
+env:
+  PYTHON_VERSION: "3.13"
+  FREE_THREADED_PYTHON_VERSION: "3.13t"
+
 jobs:
+  release:
+    name: Create Github release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Extract Unreleased section from CHANGELOG.md
+        id: extract_changelog
+        shell: bash
+        run: |
+          body=$(awk '
+          /^## \[Unreleased\]/ { flag=1; next }
+          /^## \[/ && flag { exit }
+
+          flag {
+            lines[++n] = $0
+          }
+
+          END {
+            if (n == 0) exit 0
+
+            start = 1
+            while (start <= n && lines[start] ~ /^[[:space:]]*$/) start++
+
+            end = n
+            while (end >= start && lines[end] ~ /^[[:space:]]*$/) end--
+
+            if (end < start) exit 0
+
+            for (i = start; i <= end; i++) {
+              print lines[i]
+            }
+          }' CHANGELOG.md)
+
+          echo 'body<<EOF' >> $GITHUB_OUTPUT
+          printf '%s\n' "$body" >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: ${{ steps.extract_changelog.outputs.body }}
+          prerelease: false
+          draft: true
+
   linux:
+    name: Build wheels for Linux
     runs-on: ubuntu-latest
 
     strategy:
@@ -22,14 +76,14 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.13
+          args: --release --out dist -i python${{ env.PYTHON_VERSION }}
           manylinux: manylinux_2_28
 
       - name: Build free-threaded wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.13t
+          args: --release --out dist -i python${{ env.FREE_THREADED_PYTHON_VERSION }}
           manylinux: manylinux_2_28
 
       - name: Upload wheels
@@ -39,6 +93,7 @@ jobs:
           path: dist
 
   musllinux:
+    name: Build wheels for Musl Linux
     runs-on: ubuntu-latest
 
     strategy:
@@ -53,14 +108,14 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.13
+          args: --release --out dist -i python${{ env.PYTHON_VERSION }}
           manylinux: musllinux_1_2
 
       - name: Build free-threaded wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.13t
+          args: --release --out dist -i python${{ env.FREE_THREADED_PYTHON_VERSION }}
           manylinux: musllinux_1_2
 
       - name: Upload wheels
@@ -70,6 +125,7 @@ jobs:
           path: dist
 
   windows:
+    name: Build wheels for Windows
     runs-on: windows-latest
 
     strategy:
@@ -80,10 +136,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Setup Python 3.13
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: ${{ env.PYTHON_VERSION }}
           architecture: ${{ matrix.target }}
 
       - name: Build wheels
@@ -92,17 +148,17 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --out dist
 
-      - name: Setup Python 3.13t
+      - name: Setup Python ${{ env.FREE_THREADED_PYTHON_VERSION }}
         uses: actions/setup-python@v6
         with:
-          python-version: "3.13t"
+          python-version: ${{ env.FREE_THREADED_PYTHON_VERSION }}
           architecture: ${{ matrix.target }}
 
       - name: Build free-threaded wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.13t
+          args: --release --out dist -i python${{ env.FREE_THREADED_PYTHON_VERSION }}
 
       - name: Upload wheels
         uses: actions/upload-artifact@v5
@@ -111,6 +167,7 @@ jobs:
           path: dist
 
   macos:
+    name: Build wheels for macOS
     runs-on: macos-latest
 
     strategy:
@@ -121,27 +178,27 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Setup Python 3.13
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.13
+          args: --release --out dist -i python${{ env.PYTHON_VERSION }}
 
-      - name: Setup Python 3.13t
+      - name: Setup Python ${{ env.FREE_THREADED_PYTHON_VERSION }}
         uses: actions/setup-python@v6
         with:
-          python-version: "3.13t"
+          python-version: ${{ env.FREE_THREADED_PYTHON_VERSION }}
 
       - name: Build free-threaded wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist -i python3.13t
+          args: --release --out dist -i python${{ env.FREE_THREADED_PYTHON_VERSION }}
 
       - name: Upload wheels
         uses: actions/upload-artifact@v5
@@ -150,6 +207,7 @@ jobs:
           path: dist
 
   sdist:
+    name: Build sdist
     runs-on: ubuntu-latest
 
     steps:
@@ -168,8 +226,8 @@ jobs:
           name: wheels-sdist
           path: dist
 
-  release:
-    name: Release
+  publish:
+    name: Collect artifacts and publish to PyPI
     runs-on: ubuntu-latest
     needs: [linux, musllinux, windows, macos, sdist]
     environment: pypi

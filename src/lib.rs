@@ -255,6 +255,7 @@ fn _read_obs(
                 .as_ref()
                 .map_or(true, |obs| obs.contains(&signal.observable))
     };
+    let nav_is_given = nav_rnx.is_some();
 
     if pivot {
         let (epochs, epochs_ms, svs, svs_str, code_cols, columns) =
@@ -267,7 +268,7 @@ fn _read_obs(
         }
 
         // If navigation RINEX is provided, calculate Azimuth and Elevation
-        if nav_rnx.is_some() {
+        if nav_is_given {
             let (nav_x, nav_y, nav_z) = get_nav_pos(&nav_rnx.unwrap(), epochs, svs);
             result_dict.set_item("NAV_X", nav_x)?;
             result_dict.set_item("NAV_Y", nav_y)?;
@@ -285,7 +286,7 @@ fn _read_obs(
             .signal_observations_iter()
             .filter(observable_filter)
             .for_each(|(key, signal)| {
-                if nav_rnx.is_some() {
+                if nav_is_given {
                     epochs.push(key.epoch);
                     svs.push(signal.sv);
                 }
@@ -301,7 +302,7 @@ fn _read_obs(
         result_dict.set_item("Value", values)?;
 
         // If navigation RINEX is provided, calculate Azimuth and Elevation
-        if nav_rnx.is_some() {
+        if nav_is_given {
             let (nav_x, nav_y, nav_z) = get_nav_pos(&nav_rnx.unwrap(), epochs, svs);
             result_dict.set_item("NAV_X", nav_x)?;
             result_dict.set_item("NAV_Y", nav_y)?;

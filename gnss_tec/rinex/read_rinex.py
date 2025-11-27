@@ -146,7 +146,9 @@ def read_rinex_obs(
             (e.g., ['C1C', 'L1C']). If None, all available observation types are
             included. Defaults to None.
         pivot (bool, optional): Whether to pivot the DataFrame so that each observation
-            type has its own column. Defaults to True.
+            type has its own column. If False, the DataFrame will be in long format with
+            'Code' and 'Value' columns. Pivoted format is generally more convenient for
+            analysis and has better performance. Defaults to True.
         lazy (bool, optional): Whether to return a `polars.LazyFrame`. Defaults to
             False.
 

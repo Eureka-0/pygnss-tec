@@ -37,15 +37,14 @@ def _resolve_observations_and_bias(
     valid_c2_codes = get_valid_codes(C2_CODES)
 
     # ---- 2. Unpivot the LazyFrame to long format for easier processing. ----
-    lf = (
+    long_lf = (
         lf.unpivot(
-            index=["Time", "Station", "PRN", "Azimuth", "Elevation"],
-            variable_name="Code",
-            value_name="Value",
+            index=["Time", "Station", "PRN"], variable_name="Code", value_name="Value"
         )
         .drop_nulls("Value")
         .with_columns(pl.col("PRN").str.slice(0, 1).alias("Constellation"))
     )
+    lf = lf.select("Time", "Station", "PRN", "Azimuth", "Elevation")
 
     # ---- 3. Map observation codes to bands (C1, C2, L1, L2, S1, S2). ----
     code2band: dict[str, str] = {}
@@ -64,44 +63,46 @@ def _resolve_observations_and_bias(
             code2band[f"{const}_L{code[1:]}"] = "L2"
             code2band[f"{const}_S{code[1:]}"] = "S2"
 
-    lf = lf.with_columns(
+    long_lf = long_lf.with_columns(
         pl.concat_str(pl.col("Constellation"), pl.lit("_"), pl.col("Code"))
         .replace_strict(code2band, default=None)
         .alias("Band")
     ).drop_nulls("Band")
 
-    # ---- 4. Pivot back to wide format with resolved bands as columns. ----
-    lf = (
-        lf.group_by("Time", "Station", "PRN", "Azimuth", "Elevation")
+    # ---- 4. Pivot back to wide format with resolved C bands as columns. ----
+    resolved_lf = (
+        long_lf.group_by("Time", "Station", "Constellation", "PRN")
         .agg(
             pl.col("Code").filter(pl.col("Band") == "C1").alias("C1_Code"),
-            pl.col("Value").filter(pl.col("Band") == "C1").alias("C1"),
             pl.col("Code").filter(pl.col("Band") == "C2").alias("C2_Code"),
-            pl.col("Value").filter(pl.col("Band") == "C2").alias("C2"),
-            pl.col("Code").filter(pl.col("Band") == "L1").alias("L1_Code"),
-            pl.col("Value").filter(pl.col("Band") == "L1").alias("L1"),
-            pl.col("Code").filter(pl.col("Band") == "L2").alias("L2_Code"),
-            pl.col("Value").filter(pl.col("Band") == "L2").alias("L2"),
-            pl.col("Code").filter(pl.col("Band") == "S1").alias("S1_Code"),
-            pl.col("Value").filter(pl.col("Band") == "S1").alias("S1"),
-            pl.col("Code").filter(pl.col("Band") == "S2").alias("S2_Code"),
-            pl.col("Value").filter(pl.col("Band") == "S2").alias("S2"),
         )
-        .explode("C1_Code", "C1")
-        .explode("L1_Code", "L1")
-        .filter(pl.col("C1_Code").str.slice(1, 2) == pl.col("L1_Code").str.slice(1, 2))
-        .explode("C2_Code", "C2")
-        .explode("L2_Code", "L2")
-        .filter(pl.col("C2_Code").str.slice(1, 2) == pl.col("L2_Code").str.slice(1, 2))
-        .explode("S1_Code", "S1")
-        .explode("S2_Code", "S2")
-        .filter(
-            pl.col("C1_Code").str.slice(1, 2) == pl.col("S1_Code").str.slice(1, 2),
-            pl.col("C2_Code").str.slice(1, 2) == pl.col("S2_Code").str.slice(1, 2),
+        .explode("C1_Code")
+        .explode("C2_Code")
+    )
+
+    # ---- 5. Join bias data (if provided). ----
+    if bias_lf is not None:
+        bias_prn = bias_lf.filter(pl.col("STATION").is_null())
+        bias_station = bias_lf.drop_nulls("STATION")
+        resolved_lf = resolved_lf.join(
+            bias_prn.select(
+                "PRN", C1_Code="OBS1", C2_Code="OBS2", Bias_PRN="ESTIMATED_VALUE"
+            ),
+            on=["PRN", "C1_Code", "C2_Code"],
+        ).join(
+            bias_station.select(
+                Station="STATION",
+                Constellation="PRN",
+                C1_Code="OBS1",
+                C2_Code="OBS2",
+                Bias_Station="ESTIMATED_VALUE",
+            ),
+            on=["Station", "Constellation", "C1_Code", "C2_Code"],
         )
-        .drop("L1_Code", "L2_Code", "S1_Code", "S2_Code")
-        .with_columns(pl.col("PRN").str.slice(0, 1).alias("Constellation"))
-        .with_columns(
+
+    # ---- 6. Keep only the highest priority codes for C1 and C2. ----
+    resolved_lf = (
+        resolved_lf.with_columns(
             pl.concat_str(pl.col("Constellation"), pl.lit("_"), pl.col("C1_Code"))
             .replace_strict(c12priority, default=None)
             .alias("C1_Priority"),
@@ -109,51 +110,51 @@ def _resolve_observations_and_bias(
             .replace_strict(c22priority, default=None)
             .alias("C2_Priority"),
         )
-    )
-
-    # ---- 5. Only keep the codes that are in the bias file (if provided). ----
-    if bias_lf is not None:
-        bias_prn = bias_lf.filter(pl.col("STATION").is_null())
-        bias_station = bias_lf.drop_nulls("STATION")
-        lf = (
-            lf.join(bias_prn.select("PRN", "OBS1", "OBS2", "ESTIMATED_VALUE"), on="PRN")
-            .filter(
-                pl.col("C1_Code") == pl.col("OBS1"), pl.col("C2_Code") == pl.col("OBS2")
-            )
-            .rename({"ESTIMATED_VALUE": "Bias_PRN"})
-            .drop("OBS1", "OBS2")
-            .join(
-                bias_station.select(
-                    "STATION", "PRN", "OBS1", "OBS2", "ESTIMATED_VALUE"
-                ).rename(
-                    {
-                        "STATION": "Station",
-                        "PRN": "Constellation",
-                        "ESTIMATED_VALUE": "Bias_Station",
-                    }
-                ),
-                on=["Station", "Constellation"],
-            )
-            .filter(
-                pl.col("C1_Code") == pl.col("OBS1"), pl.col("C2_Code") == pl.col("OBS2")
-            )
-            .drop("OBS1", "OBS2")
-        )
-
-    # ---- 6. Keep only the highest priority codes for C1 and C2. ----
-    lf = (
-        lf.group_by("Time", "Station", "PRN", "Azimuth", "Elevation")
+        .group_by("Time", "Station", "PRN")
         .agg(
             pl.all()
+            .exclude("C1_Priority", "C2_Priority", "Constellation")
             .sort_by(
                 pl.col("C1_Priority") * 2 + pl.col("C2_Priority"), descending=False
             )
             .first()
         )
-        .drop("C1_Priority", "C2_Priority", "Constellation")
     )
 
-    return lf
+    # ---- 7. Join back the observation values for the resolved codes. ----
+    resolved_lf = (
+        resolved_lf.join(lf, on=["Time", "Station", "PRN"])
+        .unique(["Time", "Station", "PRN"])
+        .with_columns(
+            pl.col("C1_Code").str.slice(1, None).alias("C1_Band"),
+            pl.col("C2_Code").str.slice(1, None).alias("C2_Band"),
+        )
+        .with_columns(
+            pl.concat_str(pl.lit("L"), pl.col("C1_Band")).alias("L1_Code"),
+            pl.concat_str(pl.lit("L"), pl.col("C2_Band")).alias("L2_Code"),
+            pl.concat_str(pl.lit("S"), pl.col("C1_Band")).alias("S1_Code"),
+            pl.concat_str(pl.lit("S"), pl.col("C2_Band")).alias("S2_Code"),
+        )
+        .drop("C1_Band", "C2_Band")
+    )
+
+    def match_values(code_col: str, lf: pl.LazyFrame) -> pl.LazyFrame:
+        return lf.join(
+            long_lf.select("Time", "Station", "PRN", "Code", "Value").rename(
+                {"Code": code_col, "Value": code_col[:2]}
+            ),
+            on=["Time", "Station", "PRN", code_col],
+        )
+
+    resolved_lf = match_values("C1_Code", resolved_lf)
+    resolved_lf = match_values("C2_Code", resolved_lf)
+    resolved_lf = match_values("L1_Code", resolved_lf)
+    resolved_lf = match_values("L2_Code", resolved_lf)
+    resolved_lf = match_values("S1_Code", resolved_lf)
+    resolved_lf = match_values("S2_Code", resolved_lf)
+    resolved_lf = resolved_lf.drop("L1_Code", "L2_Code", "S1_Code", "S2_Code")
+
+    return resolved_lf
 
 
 def _map_frequencies(lf: pl.LazyFrame) -> pl.LazyFrame:

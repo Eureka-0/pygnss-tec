@@ -192,7 +192,7 @@ def read_rinex_obs(
         nav_fn=nav_fn_list,
         constellations=constellations,
         t_lim=tuple(t_lim),
-        codes=codes if codes is None else list(set(codes)),
+        codes=None if codes is None else list(set(codes)),
         pivot=pivot,
     )
     codes = list(filter(lambda x: re.match(r"[A-Z]\d{1}[A-Z]$", x), result.keys()))

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 c = 299792458.0
 """Speed of light in m/s"""
 

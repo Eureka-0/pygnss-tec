@@ -18,37 +18,19 @@ from .constants import (
     c,
 )
 
-CODE_FREQ_MAP = {
-    "C_1": SIGNAL_FREQ["C"]["B1"],
-    "C_2": SIGNAL_FREQ["C"]["B1-2"],
-    "C_5": SIGNAL_FREQ["C"]["B2a"],
-    "C_6": SIGNAL_FREQ["C"]["B3"],
-    "C_7": SIGNAL_FREQ["C"]["B2b"],
-    "C_8": SIGNAL_FREQ["C"]["B2"],
-    "G_1": SIGNAL_FREQ["G"]["L1"],
-    "G_2": SIGNAL_FREQ["G"]["L2"],
-    "G_5": SIGNAL_FREQ["G"]["L5"],
-}
-
 
 def _resolve_observations(lf: pl.LazyFrame) -> pl.LazyFrame:
-    columns = lf.collect_schema().names()
-    valid_c1_codes = {
-        constellation: list(filter(lambda c: c in columns, codes))
-        for constellation, codes in C1_CODES.items()
-    }
-    valid_c2_codes = {
-        constellation: list(filter(lambda c: c in columns, codes))
-        for constellation, codes in C2_CODES.items()
-    }
-    valid_l1_codes = {
-        constellation: [f"L{c[1:]}" for c in codes]
-        for constellation, codes in valid_c1_codes.items()
-    }
-    valid_l2_codes = {
-        constellation: [f"L{c[1:]}" for c in codes]
-        for constellation, codes in valid_c2_codes.items()
-    }
+    def get_valid_codes(c_codes: dict[str, list[str]]):
+        columns = lf.collect_schema().names()
+        valid_c_codes = {
+            constellation: list(filter(lambda c: c in columns, code_list))
+            for constellation, code_list in c_codes.items()
+        }
+        valid_l_codes = {
+            constellation: [f"L{c[1:]}" for c in codes]
+            for constellation, codes in valid_c_codes.items()
+        }
+        return valid_c_codes, valid_l_codes
 
     def resolve_value(codes_dict: dict[str, list[str]]) -> pl.Expr:
         return pl.coalesce(
@@ -67,6 +49,8 @@ def _resolve_observations(lf: pl.LazyFrame) -> pl.LazyFrame:
             ]
         )
 
+    valid_c1_codes, valid_l1_codes = get_valid_codes(C1_CODES)
+    valid_c2_codes, valid_l2_codes = get_valid_codes(C2_CODES)
     return (
         lf.with_columns(
             resolve_value(valid_c1_codes).alias("C1"),
@@ -84,6 +68,18 @@ def _resolve_observations(lf: pl.LazyFrame) -> pl.LazyFrame:
 
 
 def _map_frequencies(lf: pl.LazyFrame) -> pl.LazyFrame:
+    code_freq_map = {
+        "C_1": SIGNAL_FREQ["C"]["B1"],
+        "C_2": SIGNAL_FREQ["C"]["B1-2"],
+        "C_5": SIGNAL_FREQ["C"]["B2a"],
+        "C_6": SIGNAL_FREQ["C"]["B3"],
+        "C_7": SIGNAL_FREQ["C"]["B2b"],
+        "C_8": SIGNAL_FREQ["C"]["B2"],
+        "G_1": SIGNAL_FREQ["G"]["L1"],
+        "G_2": SIGNAL_FREQ["G"]["L2"],
+        "G_5": SIGNAL_FREQ["G"]["L5"],
+    }
+
     def freq_col(code_col: str) -> pl.Expr:
         expr = pl.when(False).then(None)
         for constellation in SUPPORTED_CONSTELLATIONS:
@@ -92,7 +88,7 @@ def _map_frequencies(lf: pl.LazyFrame) -> pl.LazyFrame:
                 .str.slice(1, 1)
                 .str.pad_start(2, "_")
                 .str.pad_start(3, constellation)
-                .replace_strict(CODE_FREQ_MAP, default=None)
+                .replace_strict(code_freq_map, default=None)
             )
         return expr
 

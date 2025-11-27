@@ -35,8 +35,6 @@ compatibility = "pypi"
 module-name = "gnss_tec._core"
 python-packages = ["gnss_tec"]
 
-[tool.pytest]
-addopts = ["--log-cli-level=INFO"]
 
 [dependency-groups]
 dev = [

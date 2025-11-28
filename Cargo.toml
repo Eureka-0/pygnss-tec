@@ -10,7 +10,10 @@ name = "gnss_tec_core"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.27.1", features = ["extension-module", "abi3-py39"] }
+arrow-array = "57.1.0"
+arrow-pyarrow = "57.1.0"
+arrow-schema = "57.1.0"
+pyo3 = { version = "0.26", features = ["extension-module", "abi3-py39"] }
 rinex = { version = "0.21.1", features = ["flate2", "nav", "qc"] }
 rustc-hash = "2.1.1"
 

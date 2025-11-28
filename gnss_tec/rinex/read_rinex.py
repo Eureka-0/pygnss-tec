@@ -187,7 +187,7 @@ def read_rinex_obs(
     else:
         t_lim = [_handle_t_str(t_lim[0]), _handle_t_str(t_lim[1])]
 
-    result: dict = _read_obs(
+    header_dict, batch = _read_obs(
         obs_fn_list,
         nav_fn=nav_fn_list,
         constellations=constellations,
@@ -195,43 +195,46 @@ def read_rinex_obs(
         codes=None if codes is None else list(set(codes)),
         pivot=pivot,
     )
-    codes = list(filter(lambda x: re.match(r"[A-Z]\d{1}[A-Z]$", x), result.keys()))
+    codes = list(filter(lambda x: re.match(r"[A-Z]\d{1}[A-Z]$", x), batch.schema.names))
     ordered_cols = ["Time", "Station", "PRN"]
-    rx_x = result.pop("RX_X")
-    rx_y = result.pop("RX_Y")
-    rx_z = result.pop("RX_Z")
+    rx_x = header_dict["RX_X"]
+    rx_y = header_dict["RX_Y"]
+    rx_z = header_dict["RX_Z"]
     rx_lat, rx_lon, rx_alt = pm.ecef2geodetic(rx_x, rx_y, rx_z, deg=True)
     if nav_fn is not None:
         ordered_cols += ["Azimuth", "Elevation"]
-        nav_x = result.pop("NAV_X")
-        nav_y = result.pop("NAV_Y")
-        nav_z = result.pop("NAV_Z")
-        result["Azimuth"], result["Elevation"], _ = pm.ecef2aer(
-            nav_x, nav_y, nav_z, rx_lat, rx_lon, rx_alt, deg=True
-        )
+        nav_x = batch["NAV_X"]
+        nav_y = batch["NAV_Y"]
+        nav_z = batch["NAV_Z"]
+        az, el, _ = pm.ecef2aer(nav_x, nav_y, nav_z, rx_lat, rx_lon, rx_alt, deg=True)
+        batch = batch.append_column("Azimuth", az)
+        batch = batch.append_column("Elevation", el)
     if pivot:
         ordered_cols += sorted(codes)
     else:
         ordered_cols += ["Code", "Value"]
 
     header = RinexObsHeader(
-        version=result.pop("Version"),
-        constellation=result.pop("Constellation"),
-        marker_name=result["Station"],
-        marker_type=result.pop("MarkerType"),
+        version=header_dict["Version"],
+        constellation=header_dict["Constellation"],
+        marker_name=header_dict["Station"],
+        marker_type=header_dict["MarkerType"],
         rx_ecef=(rx_x, rx_y, rx_z),
         rx_geodetic=(float(rx_lat), float(rx_lon), float(rx_alt)),
-        sampling_interval=result.pop("SamplingInterval"),
-        leap_seconds=result.pop("LeapSeconds"),
+        sampling_interval=header_dict["SamplingInterval"],
+        leap_seconds=header_dict["LeapSeconds"],
     )
 
     df = (
-        pl.DataFrame(result)
+        pl.DataFrame(batch)
         .lazy()
-        .with_columns(pl.col("Time").cast(pl.Datetime("ms", "UTC")))
+        .with_columns(
+            pl.col("Time").cast(pl.Datetime("ms", "UTC")),
+            pl.lit(header.marker_name).alias("Station"),
+        )
         .fill_nan(None)
-        .sort(["Time", "Station", "PRN"])
         .select(ordered_cols)
+        .sort(["Time", "Station", "PRN"])
     )
 
     if lazy:

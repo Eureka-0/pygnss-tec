@@ -108,8 +108,7 @@ def read_bias(
         if not Path(f).exists():
             raise FileNotFoundError(f"Bias file not found: {f}")
 
-    df_list = [_read_bias_file(f) for f in fn_list]
-    df = pl.concat(df_list)
+    df = pl.concat([_read_bias_file(f) for f in fn_list])
 
     if lazy:
         return df

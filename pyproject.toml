@@ -1,6 +1,6 @@
 [project]
 name = "pygnss-tec"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Python package for GNSS RINEX file reading and total electron content (TEC) calculation with Rust-accelerated performance."
 readme = "README.md"
 license = { text = "MIT" }

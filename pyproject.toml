@@ -35,7 +35,6 @@ compatibility = "pypi"
 module-name = "gnss_tec._core"
 python-packages = ["gnss_tec"]
 
-
 [dependency-groups]
 dev = [
     "ipykernel>=6.31.0",

@@ -228,6 +228,7 @@ def calc_tec(
     obs_fn: str | Path | Iterable[str | Path],
     nav_fn: str | Path | Iterable[str | Path],
     bias_fn: str | Path | Iterable[str | Path] | None = None,
+    rx_bias: Literal["external", "msd"] = "external",
     constellations: str | None = None,
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     *,
@@ -240,6 +241,7 @@ def calc_tec(
     obs_fn: str | Path | Iterable[str | Path],
     nav_fn: str | Path | Iterable[str | Path],
     bias_fn: str | Path | Iterable[str | Path] | None = None,
+    rx_bias: Literal["external", "msd"] = "external",
     constellations: str | None = None,
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     *,
@@ -251,6 +253,7 @@ def calc_tec(
     obs_fn: str | Path | Iterable[str | Path],
     nav_fn: str | Path | Iterable[str | Path],
     bias_fn: str | Path | Iterable[str | Path] | None = None,
+    rx_bias: Literal["external", "msd", "fallback-msd"] = "fallback-msd",
     constellations: str | None = None,
     t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     min_elevation: float = DEFAULT_MIN_ELEVATION,
@@ -270,6 +273,12 @@ def calc_tec(
         bias_fn (str | Path | Iterable[str | Path] | None, optional): Path(s) to the
             bias file(s). If provided, DCB biases will be applied to the TEC
             calculation. Defaults to None.
+        rx_bias (Literal["external", "msd", "fallback-msd"], optional): Method for
+            receiver bias correction. Possible values are,
+            - "external": Use biases only from the provided bias file(s).
+            - "msd": Use the Minimum Standard Deviation (MSD) method to estimate.
+            - "fallback-msd": Use biases from the provided bias file(s) if available.
+              Otherwise, apply the MSD method.
         constellations (str | None, optional): Constellations to consider. If None, all
             supported constellations are used. Defaults to None.
         t_lim (tuple[str | None, str | None] | list[str | None] | None, optional): Time

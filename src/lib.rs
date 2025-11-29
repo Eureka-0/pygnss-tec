@@ -1,9 +1,10 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Float64Array, RecordBatch, StringArray};
-use arrow_pyarrow::PyArrowType;
-use arrow_schema::{DataType, Field, Schema};
+use arrow::array::make_array;
+use arrow::array::{ArrayData, ArrayRef, Float64Array, LargeStringArray, RecordBatch, StringArray};
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::pyarrow::PyArrowType;
 use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -364,8 +365,116 @@ fn _read_obs(
     Ok((header_dict.into(), PyArrowType(batch).into()))
 }
 
+fn get_nav_pos_optional(
+    nav_rnx: &Rinex,
+    epochs: Vec<Option<Epoch>>,
+    svs: Vec<Option<SV>>,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let sv_set: FxHashSet<SV> = svs.iter().flatten().copied().collect();
+    let mut ephs_by_sv: FxHashMap<SV, Vec<(Epoch, Ephemeris)>> = FxHashMap::default();
+    for (key, eph) in nav_rnx.nav_ephemeris_frames_iter() {
+        if sv_set.contains(&key.sv) {
+            ephs_by_sv
+                .entry(key.sv)
+                .or_default()
+                .push((key.epoch, replenish_perturbations(eph)));
+        }
+    }
+
+    let len = epochs.len();
+    let mut xs = Vec::with_capacity(len);
+    let mut ys = Vec::with_capacity(len);
+    let mut zs = Vec::with_capacity(len);
+
+    epochs
+        .into_iter()
+        .zip(svs.into_iter())
+        .for_each(|(epoch, sv)| {
+            if epoch.is_none() || sv.is_none() {
+                xs.push(f64::NAN);
+                ys.push(f64::NAN);
+                zs.push(f64::NAN);
+                return;
+            }
+            let epoch = epoch.unwrap();
+            let sv = sv.unwrap();
+            let pv = ephs_by_sv.get(&sv).and_then(|eph_list| {
+                eph_list
+                    .iter()
+                    .min_by_key(|(eph_epoch, _)| (epoch - *eph_epoch).abs())
+                    .and_then(|(_, eph)| eph.kepler2position_velocity(sv, epoch))
+            });
+            match pv {
+                Some(pv) => {
+                    xs.push(pv.0.x * 1e3);
+                    ys.push(pv.0.y * 1e3);
+                    zs.push(pv.0.z * 1e3);
+                }
+                None => {
+                    xs.push(f64::NAN);
+                    ys.push(f64::NAN);
+                    zs.push(f64::NAN);
+                }
+            }
+        });
+
+    (xs, ys, zs)
+}
+
+#[pyfunction]
+fn _get_nav_coords(
+    nav_fn: Vec<String>,
+    time: PyArrowType<ArrayData>,
+    prn: PyArrowType<ArrayData>,
+) -> PyResult<PyArrowType<RecordBatch>> {
+    let nav_rnx = read_rinex_files(nav_fn)?;
+
+    let time_array = time.0;
+    let time_array = make_array(time_array);
+    let time_array: &Float64Array = time_array
+        .as_any()
+        .downcast_ref()
+        .ok_or_else(|| PyValueError::new_err("Time array must be of type Float64Array"))?;
+    let prn_array = prn.0;
+    let prn_array = make_array(prn_array);
+    let prn_array: &LargeStringArray = prn_array
+        .as_any()
+        .downcast_ref()
+        .ok_or_else(|| PyValueError::new_err("PRN array must be of type LargeStringArray"))?;
+
+    let epochs: Vec<Option<Epoch>> = time_array
+        .iter()
+        .map(|t_ms| t_ms.and_then(|t| Some(Epoch::from_unix_milliseconds(t))))
+        .collect();
+    let svs: Vec<Option<SV>> = prn_array
+        .iter()
+        .map(|prn_str| {
+            prn_str.and_then(|s| match SV::from_str(s) {
+                Ok(sv) => Some(sv),
+                Err(_) => None,
+            })
+        })
+        .collect();
+
+    let (xs, ys, zs) = get_nav_pos_optional(&nav_rnx, epochs, svs);
+    let schema = Schema::new(vec![
+        Field::new("X_m", DataType::Float64, true),
+        Field::new("Y_m", DataType::Float64, true),
+        Field::new("Z_m", DataType::Float64, true),
+    ]);
+    let arrays: Vec<ArrayRef> = vec![
+        Arc::new(Float64Array::from(xs)),
+        Arc::new(Float64Array::from(ys)),
+        Arc::new(Float64Array::from(zs)),
+    ];
+    let batch = RecordBatch::try_new(Arc::new(schema), arrays)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(PyArrowType(batch).into())
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_read_obs, m)?)?;
+    m.add_function(wrap_pyfunction!(_get_nav_coords, m)?)?;
     Ok(())
 }

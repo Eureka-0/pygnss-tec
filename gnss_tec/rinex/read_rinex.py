@@ -157,13 +157,13 @@ def read_rinex_obs(
         (RinexObsHeader, pl.DataFrame | pl.LazyFrame): A Dataclass containing metadata
             from the RINEX observation file header and a DataFrame or LazyFrame
             containing the RINEX observation data with following columns.
-            - Time (datetime): Observation timestamp.
-            - Station (str): 4-character station identifier.
-            - PRN (str): Satellite PRN identifier.
-            - Azimuth (float): Satellite azimuth angle in degrees (if nav_fn provided).
-            - Elevation (float): Satellite elevation angle in degrees (if nav_fn
+            - time (datetime): Observation timestamp.
+            - station (str): 4-character station identifier.
+            - prn (str): Satellite PRN identifier.
+            - azimuth (float): Satellite azimuth angle in degrees (if nav_fn provided).
+            - elevation (float): Satellite elevation angle in degrees (if nav_fn
                 provided).
-            - Observations (float): Various observation types (e.g., C1C, C1X,
+            - observations (float): Various observation types (e.g., C1C, C1X,
                 L1C, S1C), each as a separate column.
 
     Raises:
@@ -199,45 +199,45 @@ def read_rinex_obs(
         pivot=pivot,
     )
     codes = list(filter(lambda x: re.match(r"[A-Z]\d{1}[A-Z]$", x), batch.schema.names))
-    ordered_cols = ["Time", "Station", "PRN"]
-    rx_x = header_dict["RX_X"]
-    rx_y = header_dict["RX_Y"]
-    rx_z = header_dict["RX_Z"]
+    ordered_cols = ["time", "station", "prn"]
+    rx_x = header_dict["rx_x"]
+    rx_y = header_dict["rx_y"]
+    rx_z = header_dict["rx_z"]
     rx_lat, rx_lon, rx_alt = pm.ecef2geodetic(rx_x, rx_y, rx_z, deg=True)
     if nav_fn is not None:
-        ordered_cols += ["Azimuth", "Elevation"]
-        nav_x = batch["NAV_X"]
-        nav_y = batch["NAV_Y"]
-        nav_z = batch["NAV_Z"]
+        ordered_cols += ["azimuth", "elevation"]
+        nav_x = batch["nav_x"]
+        nav_y = batch["nav_y"]
+        nav_z = batch["nav_z"]
         az, el, _ = pm.ecef2aer(nav_x, nav_y, nav_z, rx_lat, rx_lon, rx_alt, deg=True)
-        batch = batch.append_column("Azimuth", az)
-        batch = batch.append_column("Elevation", el)
+        batch = batch.append_column("azimuth", az)
+        batch = batch.append_column("elevation", el)
     if pivot:
         ordered_cols += sorted(codes)
     else:
-        ordered_cols += ["Code", "Value"]
+        ordered_cols += ["code", "value"]
 
     header = RinexObsHeader(
-        version=header_dict["Version"],
-        constellation=header_dict["Constellation"],
-        marker_name=header_dict["Station"],
-        marker_type=header_dict["MarkerType"],
+        version=header_dict["version"],
+        constellation=header_dict["constellation"],
+        marker_name=header_dict["station"],
+        marker_type=header_dict["marker_type"],
         rx_ecef=(rx_x, rx_y, rx_z),
         rx_geodetic=(float(rx_lat), float(rx_lon), float(rx_alt)),
-        sampling_interval=header_dict["SamplingInterval"],
-        leap_seconds=header_dict["LeapSeconds"],
+        sampling_interval=header_dict["sampling_interval"],
+        leap_seconds=header_dict["leap_seconds"],
     )
 
     df = (
         pl.DataFrame(batch)
         .lazy()
         .with_columns(
-            pl.col("Time").cast(pl.Datetime("ms", "UTC")),
-            pl.lit(header.marker_name).alias("Station"),
+            pl.col("time").cast(pl.Datetime("ms", "UTC")),
+            pl.lit(header.marker_name).alias("station"),
         )
         .fill_nan(None)
         .select(ordered_cols)
-        .sort(["Time", "Station", "PRN"])
+        .sort(["time", "station", "prn"])
     )
 
     if lazy:
@@ -273,15 +273,15 @@ def get_nav_coords(
         time = pd.to_datetime(list(time))
 
     def map_nav_coords(df: pl.DataFrame) -> pl.DataFrame:
-        time = df["Time"].dt.epoch("ms").cast(pl.Float64).to_arrow()
-        prn = df["PRN"].to_arrow()
+        time = df["time"].dt.epoch("ms").cast(pl.Float64).to_arrow()
+        prn = df["prn"].to_arrow()
         batch = _get_nav_coords(nav_fn=nav_fn_list, time=time, prn=prn)
         return pl.concat([df, pl.DataFrame(batch)], how="horizontal")
 
     df = pl.DataFrame(
-        {"Time": time, "PRN": prn},
-        schema={"Time": pl.Datetime("ms", "UTC"), "PRN": pl.String},
+        {"time": time, "prn": prn},
+        schema={"time": pl.Datetime("ms", "UTC"), "prn": pl.String},
     )
     schema = df.schema
-    schema.update({"X_m": pl.Float64(), "Y_m": pl.Float64(), "Z_m": pl.Float64()})
+    schema.update({"nav_x": pl.Float64(), "nav_y": pl.Float64(), "nav_z": pl.Float64()})
     return df.lazy().map_batches(map_nav_coords, schema=schema).collect()

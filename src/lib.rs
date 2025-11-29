@@ -243,15 +243,15 @@ fn _read_obs(
     let marker_type = marker.and_then(|m| m.marker_type.and_then(|mt| Some(mt.to_string())));
 
     let header_dict = PyDict::new(py);
-    header_dict.set_item("Version", version)?;
-    header_dict.set_item("Constellation", constellation)?;
-    header_dict.set_item("SamplingInterval", sampling_interval)?;
-    header_dict.set_item("LeapSeconds", leap_seconds)?;
-    header_dict.set_item("Station", marker_name)?;
-    header_dict.set_item("MarkerType", marker_type)?;
-    header_dict.set_item("RX_X", x_m)?;
-    header_dict.set_item("RX_Y", y_m)?;
-    header_dict.set_item("RX_Z", z_m)?;
+    header_dict.set_item("version", version)?;
+    header_dict.set_item("constellation", constellation)?;
+    header_dict.set_item("sampling_interval", sampling_interval)?;
+    header_dict.set_item("leap_seconds", leap_seconds)?;
+    header_dict.set_item("station", marker_name)?;
+    header_dict.set_item("marker_type", marker_type)?;
+    header_dict.set_item("rx_x", x_m)?;
+    header_dict.set_item("rx_y", y_m)?;
+    header_dict.set_item("rx_z", z_m)?;
 
     // construct observation data RecordBatch
     let nav_is_given = nav_rnx.is_some();
@@ -269,8 +269,8 @@ fn _read_obs(
             pivot_observations(&obs_rnx, observable_filter);
 
         let mut fields = vec![
-            Field::new("Time", DataType::Float64, true),
-            Field::new("PRN", DataType::Utf8, true),
+            Field::new("time", DataType::Float64, true),
+            Field::new("prn", DataType::Utf8, true),
         ];
         let mut arrays: Vec<ArrayRef> = vec![
             Arc::new(Float64Array::from(epochs_ms)),
@@ -287,9 +287,9 @@ fn _read_obs(
             arrays.push(Arc::new(Float64Array::from(nav_x)));
             arrays.push(Arc::new(Float64Array::from(nav_y)));
             arrays.push(Arc::new(Float64Array::from(nav_z)));
-            fields.push(Field::new("NAV_X", DataType::Float64, true));
-            fields.push(Field::new("NAV_Y", DataType::Float64, true));
-            fields.push(Field::new("NAV_Z", DataType::Float64, true));
+            fields.push(Field::new("nav_x", DataType::Float64, true));
+            fields.push(Field::new("nav_y", DataType::Float64, true));
+            fields.push(Field::new("nav_z", DataType::Float64, true));
         }
 
         batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)
@@ -335,10 +335,10 @@ fn _read_obs(
         }
 
         let mut fields = vec![
-            Field::new("Time", DataType::Float64, true),
-            Field::new("PRN", DataType::Utf8, true),
-            Field::new("Code", DataType::Utf8, true),
-            Field::new("Value", DataType::Float64, true),
+            Field::new("time", DataType::Float64, true),
+            Field::new("prn", DataType::Utf8, true),
+            Field::new("code", DataType::Utf8, true),
+            Field::new("value", DataType::Float64, true),
         ];
         let mut arrays: Vec<ArrayRef> = vec![
             Arc::new(Float64Array::from(epochs_ms)),
@@ -353,9 +353,9 @@ fn _read_obs(
             arrays.push(Arc::new(Float64Array::from(nav_x)));
             arrays.push(Arc::new(Float64Array::from(nav_y)));
             arrays.push(Arc::new(Float64Array::from(nav_z)));
-            fields.push(Field::new("NAV_X", DataType::Float64, true));
-            fields.push(Field::new("NAV_Y", DataType::Float64, true));
-            fields.push(Field::new("NAV_Z", DataType::Float64, true));
+            fields.push(Field::new("nav_x", DataType::Float64, true));
+            fields.push(Field::new("nav_y", DataType::Float64, true));
+            fields.push(Field::new("nav_z", DataType::Float64, true));
         }
 
         batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)
@@ -458,9 +458,9 @@ fn _get_nav_coords(
 
     let (xs, ys, zs) = get_nav_pos_optional(&nav_rnx, epochs, svs);
     let schema = Schema::new(vec![
-        Field::new("X_m", DataType::Float64, true),
-        Field::new("Y_m", DataType::Float64, true),
-        Field::new("Z_m", DataType::Float64, true),
+        Field::new("nav_x", DataType::Float64, true),
+        Field::new("nav_y", DataType::Float64, true),
+        Field::new("nav_z", DataType::Float64, true),
     ]);
     let arrays: Vec<ArrayRef> = vec![
         Arc::new(Float64Array::from(xs)),

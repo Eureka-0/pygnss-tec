@@ -6,7 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
 
+- Change column names to lowercase for convenience
+
+### Fixed
+
+- Improve memory efficiency in TEC calculation by avoiding unnecessary intermediate columns
 
 ## [0.2.0](https://github.com/Eureka-0/pygnss-tec/releases/tag/v0.2.0) - 2025-11-28
 

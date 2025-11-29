@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Literal, overload
+from typing import Literal, overload
 
 import pandas as pd
 import polars as pl
 import pymap3d as pm
 
-from .._core import _read_obs
+from .._core import _get_nav_coords, _read_obs
 
 ALL_CONSTELLATIONS = {
     "C": "BDS",
@@ -153,7 +154,9 @@ def read_rinex_obs(
             False.
 
     Returns:
-        (RinexObsHeader, pl.DataFrame | pl.LazyFrame): A Dataclass containing metadata from the RINEX observation file header and a DataFrame or LazyFrame containing the RINEX observation data with following columns.
+        (RinexObsHeader, pl.DataFrame | pl.LazyFrame): A Dataclass containing metadata
+            from the RINEX observation file header and a DataFrame or LazyFrame
+            containing the RINEX observation data with following columns.
             - Time (datetime): Observation timestamp.
             - Station (str): 4-character station identifier.
             - PRN (str): Satellite PRN identifier.
@@ -241,3 +244,44 @@ def read_rinex_obs(
         return header, df
     else:
         return header, df.collect()
+
+
+def get_nav_coords(
+    nav_fn: str | Path | Iterable[str | Path],
+    time: str | pd.Timestamp | Iterable[str] | pd.DatetimeIndex,
+    prn: str | Iterable[str],
+):
+    """
+    Get satellite ECEF coordinates from RINEX navigation file(s).
+
+    Args:
+        nav_fn (str | Path | Iterable[str | Path]): Path(s) to the RINEX navigation
+            file(s).
+        time (str | pd.Timestamp | Iterable[str] | pd.DatetimeIndex): Observation
+            time(s).
+        prn (str | Iterable[str]): Satellite PRN(s).
+
+    Returns:
+        pl.DataFrame: DataFrame with columns 'X_m', 'Y_m', 'Z_m' representing satellite
+            ECEF coordinates in meters.
+    """
+    nav_fn_list = _handle_fn(nav_fn)
+
+    if isinstance(time, (str, pd.Timestamp)):
+        time = pd.to_datetime(time)
+    elif isinstance(time, Iterable) and not isinstance(time, pd.DatetimeIndex):
+        time = pd.to_datetime(list(time))
+
+    def map_nav_coords(df: pl.DataFrame) -> pl.DataFrame:
+        time = df["Time"].dt.epoch("ms").cast(pl.Float64).to_arrow()
+        prn = df["PRN"].to_arrow()
+        batch = _get_nav_coords(nav_fn=nav_fn_list, time=time, prn=prn)
+        return pl.concat([df, pl.DataFrame(batch)], how="horizontal")
+
+    df = pl.DataFrame(
+        {"Time": time, "PRN": prn},
+        schema={"Time": pl.Datetime("ms", "UTC"), "PRN": pl.String},
+    )
+    schema = df.schema
+    schema.update({"X_m": pl.Float64(), "Y_m": pl.Float64(), "Z_m": pl.Float64()})
+    return df.lazy().map_batches(map_nav_coords, schema=schema).collect()

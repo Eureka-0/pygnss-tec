@@ -321,6 +321,12 @@ def calc_tec(
         constellations = "".join(SUPPORTED_CONSTELLATIONS.keys())
 
     header, lf = read_rinex_obs(obs_fn, nav_fn, constellations, t_lim, lazy=True)
+    if header.sampling_interval == 1:
+        arc_interval = pl.duration(minutes=1)
+    else:
+        arc_interval = pl.duration(minutes=5)
+
+    # Filter by minimum elevation angle and drop D-code observations
     lf = lf.filter(pl.col("elevation") >= min_elevation).drop(cs.matches(r"^D\d[A-Z]$"))
 
     if bias_fn is not None:
@@ -353,13 +359,20 @@ def calc_tec(
         .with_columns(
             (pl.col("stec_g") - pl.col("stec_p")).alias("raw_offset"),
             pl.col("elevation").radians().sin().pow(2).alias("weight"),
+            pl.col("time")
+            .diff()
+            .ge(arc_interval)
+            .fill_null(False)
+            .cum_sum()
+            .over("station", "prn")
+            .alias("arc_id"),
         )
         .with_columns(
             pl.col("raw_offset")
             .mul(pl.col("weight"))
             .sum()
             .truediv(pl.col("weight").sum())
-            .over("prn")
+            .over("station", "prn", "arc_id")
             .alias("offset")
         )
         .with_columns(

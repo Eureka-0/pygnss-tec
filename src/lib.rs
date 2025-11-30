@@ -1,8 +1,9 @@
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
 use arrow::array::make_array;
-use arrow::array::{ArrayData, ArrayRef, Float64Array, LargeStringArray, RecordBatch, StringArray};
+use arrow::array::{ArrayData, ArrayRef, Float64Array, Int64Array, LargeStringArray, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::pyarrow::PyArrowType;
 use pyo3::exceptions::{PyIOError, PyValueError};
@@ -11,7 +12,6 @@ use pyo3::types::PyDict;
 use rinex::navigation::{Ephemeris, Perturbations};
 use rinex::observation::{ObsKey, SignalObservation};
 use rinex::prelude::{qc::Merge, *};
-use rustc_hash::{FxHashMap, FxHashSet};
 
 // All supported constellations: G - GPS, C - BeiDou, E - Galileo, R - GLONASS, J - QZSS, I - IRNSS, S - SBAS
 const ALL_CONSTELLATIONS: &str = "GCERJIS";
@@ -34,10 +34,6 @@ fn read_rinex_files(paths: Vec<String>) -> PyResult<Rinex> {
         let _ = rinex.merge_mut(&next_rinex);
     }
     Ok(rinex)
-}
-
-fn epoch_from_str(s: Option<&str>) -> Option<Epoch> {
-    s.and_then(|t_str| Epoch::from_str(t_str).ok())
 }
 
 fn replenish_perturbations(eph: &Ephemeris) -> Ephemeris {
@@ -113,7 +109,7 @@ fn pivot_observations(
     observable_filter: impl Fn(&(ObsKey, &SignalObservation)) -> bool,
 ) -> (
     Vec<Epoch>,
-    Vec<f64>,
+    Vec<i64>,
     Vec<SV>,
     Vec<String>,
     Vec<String>,
@@ -127,7 +123,7 @@ fn pivot_observations(
 
     // 时间和 SV 列
     let mut epochs: Vec<Epoch> = Vec::new();
-    let mut epochs_ms: Vec<f64> = Vec::new();
+    let mut epochs_ms: Vec<i64> = Vec::new();
     let mut svs: Vec<SV> = Vec::new();
     let mut svs_str: Vec<String> = Vec::new();
 
@@ -149,7 +145,7 @@ fn pivot_observations(
 
                 // 记录行的 Time, PRN
                 epochs.push(key.epoch);
-                epochs_ms.push(key.epoch.to_unix_milliseconds());
+                epochs_ms.push(key.epoch.to_unix_milliseconds() as i64);
                 svs.push(signal.sv);
                 svs_str.push(signal.sv.to_string());
 
@@ -191,7 +187,6 @@ fn pivot_observations(
 /// - `obs_fn` - Vector of paths to RINEX observation files.
 /// - `nav_fn` - Optional vector of paths to RINEX navigation files.
 /// - `constellations` - Optional string of constellation codes to filter (e.g., "CGE").
-/// - `t_lim` - Tuple of optional start and end time strings for filtering epochs.
 /// - `codes` - Optional vector of observable codes to include.
 /// # Returns
 /// - `PyResult<PyDict>` - Dictionary containing the RINEX header information.
@@ -202,7 +197,6 @@ fn _read_obs(
     obs_fn: Vec<String>,
     nav_fn: Option<Vec<String>>,
     constellations: Option<String>,
-    t_lim: (Option<String>, Option<String>),
     codes: Option<Vec<String>>,
     pivot: bool,
 ) -> PyResult<(Py<PyDict>, PyArrowType<RecordBatch>)> {
@@ -218,8 +212,6 @@ fn _read_obs(
         .filter(|&c| ALL_CONSTELLATIONS.contains(c))
         .filter_map(|c| Constellation::from_str(&c.to_string()).ok())
         .collect();
-    let t1 = epoch_from_str(t_lim.0.as_deref());
-    let t2 = epoch_from_str(t_lim.1.as_deref());
     let observables: Option<Vec<Observable>> = codes.as_ref().map(|code_list| {
         code_list
             .iter()
@@ -257,10 +249,8 @@ fn _read_obs(
     let nav_is_given = nav_rnx.is_some();
     let batch: RecordBatch;
     if pivot {
-        let observable_filter = |(key, signal): &(ObsKey, &SignalObservation)| {
-            (t1.map_or(true, |t1| key.epoch >= t1))
-                && (t2.map_or(true, |t2| key.epoch <= t2))
-                && const_filter.contains(&signal.sv.constellation)
+        let observable_filter = |(_, signal): &(ObsKey, &SignalObservation)| {
+            const_filter.contains(&signal.sv.constellation)
                 && observables
                     .as_ref()
                     .map_or(true, |obs| obs.contains(&signal.observable))
@@ -269,27 +259,27 @@ fn _read_obs(
             pivot_observations(&obs_rnx, observable_filter);
 
         let mut fields = vec![
-            Field::new("time", DataType::Float64, true),
-            Field::new("prn", DataType::Utf8, true),
+            Field::new("time", DataType::Int64, true),
+            Field::new("prn", DataType::LargeUtf8, true),
         ];
         let mut arrays: Vec<ArrayRef> = vec![
-            Arc::new(Float64Array::from(epochs_ms)),
-            Arc::new(StringArray::from(svs_str)),
+            Arc::new(Int64Array::from(epochs_ms)),
+            Arc::new(LargeStringArray::from(svs_str)),
         ];
         for (code, col) in code_cols.into_iter().zip(columns.into_iter()) {
-            arrays.push(Arc::new(Float64Array::from(col)));
             fields.push(Field::new(code, DataType::Float64, true));
+            arrays.push(Arc::new(Float64Array::from(col)));
         }
 
         // If navigation RINEX is provided, calculate Azimuth and Elevation
         if nav_is_given {
             let (nav_x, nav_y, nav_z) = get_nav_pos(&nav_rnx.unwrap(), epochs, svs);
-            arrays.push(Arc::new(Float64Array::from(nav_x)));
-            arrays.push(Arc::new(Float64Array::from(nav_y)));
-            arrays.push(Arc::new(Float64Array::from(nav_z)));
             fields.push(Field::new("nav_x", DataType::Float64, true));
             fields.push(Field::new("nav_y", DataType::Float64, true));
             fields.push(Field::new("nav_z", DataType::Float64, true));
+            arrays.push(Arc::new(Float64Array::from(nav_x)));
+            arrays.push(Arc::new(Float64Array::from(nav_y)));
+            arrays.push(Arc::new(Float64Array::from(nav_z)));
         }
 
         batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)
@@ -303,16 +293,6 @@ fn _read_obs(
         let mut values: Vec<f64> = Vec::new();
 
         for (key, obs) in obs_rnx.observations_iter() {
-            if let Some(t1) = t1 {
-                if key.epoch < t1 {
-                    continue;
-                }
-            }
-            if let Some(t2) = t2 {
-                if key.epoch > t2 {
-                    continue;
-                }
-            }
             let epoch_ms = key.epoch.to_unix_milliseconds();
             for signal in obs.signals.iter() {
                 if !const_filter.contains(&signal.sv.constellation) {
@@ -336,33 +316,33 @@ fn _read_obs(
 
         let mut fields = vec![
             Field::new("time", DataType::Float64, true),
-            Field::new("prn", DataType::Utf8, true),
-            Field::new("code", DataType::Utf8, true),
+            Field::new("prn", DataType::LargeUtf8, true),
+            Field::new("code", DataType::LargeUtf8, true),
             Field::new("value", DataType::Float64, true),
         ];
         let mut arrays: Vec<ArrayRef> = vec![
             Arc::new(Float64Array::from(epochs_ms)),
-            Arc::new(StringArray::from(svs_str)),
-            Arc::new(StringArray::from(codes_vec)),
+            Arc::new(LargeStringArray::from(svs_str)),
+            Arc::new(LargeStringArray::from(codes_vec)),
             Arc::new(Float64Array::from(values)),
         ];
 
         // If navigation RINEX is provided, calculate Azimuth and Elevation
         if nav_is_given {
             let (nav_x, nav_y, nav_z) = get_nav_pos(&nav_rnx.unwrap(), epochs, svs);
-            arrays.push(Arc::new(Float64Array::from(nav_x)));
-            arrays.push(Arc::new(Float64Array::from(nav_y)));
-            arrays.push(Arc::new(Float64Array::from(nav_z)));
             fields.push(Field::new("nav_x", DataType::Float64, true));
             fields.push(Field::new("nav_y", DataType::Float64, true));
             fields.push(Field::new("nav_z", DataType::Float64, true));
+            arrays.push(Arc::new(Float64Array::from(nav_x)));
+            arrays.push(Arc::new(Float64Array::from(nav_y)));
+            arrays.push(Arc::new(Float64Array::from(nav_z)));
         }
 
         batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
     }
 
-    Ok((header_dict.into(), PyArrowType(batch).into()))
+    Ok((header_dict.into(), PyArrowType(batch)))
 }
 
 fn get_nav_pos_optional(
@@ -431,10 +411,10 @@ fn _get_nav_coords(
 
     let time_array = time.0;
     let time_array = make_array(time_array);
-    let time_array: &Float64Array = time_array
+    let time_array: &Int64Array = time_array
         .as_any()
         .downcast_ref()
-        .ok_or_else(|| PyValueError::new_err("Time array must be of type Float64Array"))?;
+        .ok_or_else(|| PyValueError::new_err("Time array must be of type Int64Array"))?;
     let prn_array = prn.0;
     let prn_array = make_array(prn_array);
     let prn_array: &LargeStringArray = prn_array
@@ -444,7 +424,7 @@ fn _get_nav_coords(
 
     let epochs: Vec<Option<Epoch>> = time_array
         .iter()
-        .map(|t_ms| t_ms.and_then(|t| Some(Epoch::from_unix_milliseconds(t))))
+        .map(|t_ms| t_ms.and_then(|t| Some(Epoch::from_unix_milliseconds(t as f64))))
         .collect();
     let svs: Vec<Option<SV>> = prn_array
         .iter()

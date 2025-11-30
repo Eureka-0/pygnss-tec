@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Iterable, Literal, overload
+from typing import Iterable, Literal
 
 import numpy as np
 import polars as pl
@@ -232,44 +232,15 @@ def _single_layer_model(
     return mf, ipp_lat.degrees(), ipp_lon.degrees()
 
 
-@overload
 def calc_tec(
     obs_fn: str | Path | Iterable[str | Path],
     nav_fn: str | Path | Iterable[str | Path],
     bias_fn: str | Path | Iterable[str | Path] | None = None,
     rx_bias: Literal["external", "msd", "fallback-msd"] = "fallback-msd",
     constellations: str | None = None,
-    t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
-    *,
-    lazy: Literal[True],
-) -> pl.LazyFrame: ...
-
-
-@overload
-def calc_tec(
-    obs_fn: str | Path | Iterable[str | Path],
-    nav_fn: str | Path | Iterable[str | Path],
-    bias_fn: str | Path | Iterable[str | Path] | None = None,
-    rx_bias: Literal["external", "msd", "fallback-msd"] = "fallback-msd",
-    constellations: str | None = None,
-    t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
-    *,
-    lazy: Literal[False] = False,
-) -> pl.DataFrame: ...
-
-
-def calc_tec(
-    obs_fn: str | Path | Iterable[str | Path],
-    nav_fn: str | Path | Iterable[str | Path],
-    bias_fn: str | Path | Iterable[str | Path] | None = None,
-    rx_bias: Literal["external", "msd", "fallback-msd"] = "fallback-msd",
-    constellations: str | None = None,
-    t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     min_elevation: float = DEFAULT_MIN_ELEVATION,
     min_snr: float = DEFAULT_MIN_SNR,
-    *,
-    lazy: bool = False,
-) -> pl.LazyFrame | pl.DataFrame:
+) -> pl.LazyFrame:
     """
     Calculate the Total Electron Content (TEC) from RINEX observation and navigation files.
 
@@ -290,14 +261,6 @@ def calc_tec(
               Otherwise, apply the MSD method.
         constellations (str | None, optional): Constellations to consider. If None, all
             supported constellations are used. Defaults to None.
-        t_lim (tuple[str | None, str | None] | list[str | None] | None, optional): Time
-            limits for TEC calculation. Should be a tuple or list with two
-            elements representing the start and end times. Use None for no limit on
-            either end. Timezone can be specified using ISO 8601 format (e.g.,
-            '2023-01-01 00:00:00Z', '2023-01-01 00:00:00+0800', as long as
-            `pd.to_datetime` can parse it). Additionally, 'GPST' is also supported
-            (e.g., '2023-01-01 00:00:00 GPST'). If no timezone is provided, UTC is
-            assumed. Defaults to None.
         min_elevation (float, optional): Minimum satellite elevation angle in degrees
             for including observations. Defaults to DEFAULT_MIN_ELEVATION (40.0).
         min_snr (float, optional): Minimum signal-to-noise ratio in dB-Hz for
@@ -306,8 +269,7 @@ def calc_tec(
             False.
 
     Returns:
-        (pl.LazyFrame | pl.DataFrame): A LazyFrame or DataFrame containing the
-            calculated TEC values.
+        pl.LazyFrame: A LazyFrame containing the calculated TEC values.
     """
     if constellations is not None:
         constellations = constellations.upper()
@@ -320,7 +282,7 @@ def calc_tec(
     else:
         constellations = "".join(SUPPORTED_CONSTELLATIONS.keys())
 
-    header, lf = read_rinex_obs(obs_fn, nav_fn, constellations, t_lim, lazy=True)
+    header, lf = read_rinex_obs(obs_fn, nav_fn, constellations)
     if header.sampling_interval == 1:
         arc_interval = pl.duration(minutes=1)
     else:
@@ -423,7 +385,4 @@ def calc_tec(
         .with_columns(pl.col("station").cast(pl.String), pl.col("prn").cast(pl.String))
     )
 
-    if lazy:
-        return lf
-    else:
-        return lf.collect()
+    return lf

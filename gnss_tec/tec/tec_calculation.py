@@ -341,7 +341,7 @@ def calc_tec(
             # levelled sTEC, in TECU
             (pl.col("stec_p") + pl.col("offset")).alias("stec")
         )
-        .drop("C1", "C2", "L1", "L2", "raw_offset", "weight", "offset")
+        .drop("C1", "C2", "L1", "L2", "raw_offset", "weight", "offset", "arc_id")
     )
 
     rx_lat, rx_lon, _ = header.rx_geodetic

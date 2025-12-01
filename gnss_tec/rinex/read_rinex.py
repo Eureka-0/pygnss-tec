@@ -138,7 +138,7 @@ def read_rinex_obs(
     header = RinexObsHeader(
         version=header_dict["version"],
         constellation=header_dict["constellation"],
-        marker_name=header_dict["station"],
+        marker_name=header_dict["station"][:4].strip(),
         marker_type=header_dict["marker_type"],
         rx_ecef=(rx_x, rx_y, rx_z),
         rx_geodetic=(float(rx_lat), float(rx_lon), float(rx_alt)),

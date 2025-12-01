@@ -150,10 +150,10 @@ def read_rinex_obs(
 
     if nav_fn is not None:
         ordered_cols += ["azimuth", "elevation"]
-        nav_x = batch["nav_x"].to_numpy()
-        nav_y = batch["nav_y"].to_numpy()
-        nav_z = batch["nav_z"].to_numpy()
-        az, el, _ = pm.ecef2aer(nav_x, nav_y, nav_z, rx_lat, rx_lon, rx_alt, deg=True)
+        sat_x = batch["sat_x"].to_numpy()
+        sat_y = batch["sat_y"].to_numpy()
+        sat_z = batch["sat_z"].to_numpy()
+        az, el, _ = pm.ecef2aer(sat_x, sat_y, sat_z, rx_lat, rx_lon, rx_alt, deg=True)
         lf = lf.with_columns(pl.Series("azimuth", az), pl.Series("elevation", el))
     if pivot:
         ordered_cols += sorted(codes)

@@ -56,7 +56,7 @@ fn replenish_perturbations(eph: &Ephemeris) -> Ephemeris {
     }
 }
 
-fn get_nav_pos(
+fn get_sat_pos(
     nav_rnx: &Rinex,
     epochs: Vec<Epoch>,
     svs: Vec<SV>,
@@ -293,13 +293,13 @@ fn _read_obs(
 
     // If navigation RINEX is provided, calculate Azimuth and Elevation
     if nav_is_given {
-        let (nav_x, nav_y, nav_z) = get_nav_pos(&nav_rnx.unwrap(), epochs, svs);
-        fields.push(Field::new("nav_x", DataType::Float64, false));
-        fields.push(Field::new("nav_y", DataType::Float64, false));
-        fields.push(Field::new("nav_z", DataType::Float64, false));
-        arrays.push(Arc::new(Float64Array::from(nav_x)));
-        arrays.push(Arc::new(Float64Array::from(nav_y)));
-        arrays.push(Arc::new(Float64Array::from(nav_z)));
+        let (sat_x, sat_y, sat_z) = get_sat_pos(&nav_rnx.unwrap(), epochs, svs);
+        fields.push(Field::new("sat_x", DataType::Float64, false));
+        fields.push(Field::new("sat_y", DataType::Float64, false));
+        fields.push(Field::new("sat_z", DataType::Float64, false));
+        arrays.push(Arc::new(Float64Array::from(sat_x)));
+        arrays.push(Arc::new(Float64Array::from(sat_y)));
+        arrays.push(Arc::new(Float64Array::from(sat_z)));
     }
 
     let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)

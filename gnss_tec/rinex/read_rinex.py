@@ -8,7 +8,7 @@ from pathlib import Path
 import polars as pl
 import pymap3d as pm
 
-from .._core import _get_nav_coords, _read_obs
+from .._core import _read_obs
 
 ALL_CONSTELLATIONS = {
     "C": "BDS",
@@ -171,32 +171,3 @@ def read_rinex_obs(
     )
 
     return header, lf
-
-
-def get_nav_coords(
-    nav_fn: str | Path | Iterable[str | Path], df: pl.DataFrame | pl.LazyFrame
-) -> pl.LazyFrame:
-    """
-    Get satellite ECEF coordinates from RINEX navigation file(s).
-
-    Args:
-        nav_fn (str | Path | Iterable[str | Path]): Path(s) to the RINEX navigation
-            file(s).
-        df (pl.DataFrame | pl.LazyFrame): DataFrame or LazyFrame containing 'time' and
-            'prn' columns. 'time' should be in datetime format.
-
-    Returns:
-        pl.LazyFrame: LazyFrame with columns 'nav_x', 'nav_y', 'nav_z' representing
-            satellite ECEF coordinates in meters.
-    """
-    nav_fn_list = _handle_fn(nav_fn)
-
-    def map_nav_coords(df: pl.DataFrame) -> pl.DataFrame:
-        time = df["time"].dt.epoch("ms").cast(pl.Int64).to_arrow()
-        prn = df["prn"].to_arrow()
-        batch = _get_nav_coords(nav_fn=nav_fn_list, time=time, prn=prn)
-        return pl.concat([df, pl.DataFrame(batch)], how="horizontal")
-
-    schema = df.collect_schema()
-    schema.update({"nav_x": pl.Float64(), "nav_y": pl.Float64(), "nav_z": pl.Float64()})
-    return df.lazy().map_batches(map_nav_coords, schema=schema)

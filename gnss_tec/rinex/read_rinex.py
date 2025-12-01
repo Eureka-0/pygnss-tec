@@ -94,7 +94,7 @@ def read_rinex_obs(
             included. Defaults to None.
         pivot (bool, optional): Whether to pivot the DataFrame so that each observation
             type has its own column. If False, the DataFrame will be in long format with
-            'Code' and 'Value' columns. Pivoted format is generally more convenient for
+            'code' and 'value' columns. Pivoted format is generally more convenient for
             analysis and has better performance. Defaults to True.
 
     Returns:

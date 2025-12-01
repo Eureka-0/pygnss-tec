@@ -22,6 +22,9 @@ dependencies = [
     "pymap3d>=3.2.0",
 ]
 
+[tool.pytest]
+testpaths = ["tests"]
+
 [project.urls]
 repository = "https://github.com/Eureka-0/pygnss-tec.git"
 
@@ -37,11 +40,8 @@ python-packages = ["gnss_tec"]
 
 [dependency-groups]
 dev = [
-    "altair<6.0.0",
     "ipykernel>=6.31.0",
-    "marimo>=0.18.1",
     "matplotlib>=3.9.4",
-    "pygithub>=2.8.1",
     "pytest>=8.4.2",
     "ruff>=0.14.6",
 ]

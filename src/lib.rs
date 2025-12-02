@@ -12,6 +12,20 @@ use pyo3::types::PyDict;
 use rinex::navigation::{Ephemeris, Perturbations};
 use rinex::prelude::{qc::Merge, *};
 
+#[cfg(all(feature = "custom-alloc", target_family = "unix"))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(all(feature = "custom-alloc", target_family = "unix"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
+#[cfg(all(feature = "custom-alloc", target_family = "windows"))]
+use mimalloc::MiMalloc;
+
+#[cfg(all(feature = "custom-alloc", target_family = "windows"))]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 // All supported constellations: G - GPS, C - BeiDou, E - Galileo, R - GLONASS, J - QZSS, I - IRNSS, S - SBAS
 const ALL_CONSTELLATIONS: &str = "GCERJIS";
 
@@ -91,21 +105,17 @@ fn get_sat_pos(
     (xs, ys, zs)
 }
 
-fn pivot_observations<'a>(
-    obs_rnx: &'a Rinex,
-    const_filter: &FxHashSet<Constellation>,
+fn pivot_observations(
+    obs_rnx: Rinex,
+    const_filter: FxHashSet<Constellation>,
     observables: Option<&FxHashSet<Observable>>,
-) -> (
-    Vec<Epoch>,
-    Vec<i64>,
-    Vec<SV>,
-    FxHashMap<&'a Observable, Vec<Option<f64>>>,
-) {
+    return_epochs: bool,
+) -> (Vec<Epoch>, Vec<i64>, Vec<SV>, FxHashMap<String, Vec<f64>>) {
     // 行索引：(epoch, sv) -> row_idx
     let mut row_index: FxHashMap<(&Epoch, &SV), usize> = FxHashMap::default();
 
     // 列数据：observable code -> column values
-    let mut code_value: FxHashMap<&Observable, Vec<Option<f64>>> = FxHashMap::default();
+    let mut code_value: FxHashMap<String, Vec<f64>> = FxHashMap::default();
 
     // 时间和 SV 列
     let mut epochs: Vec<Epoch> = Vec::new();
@@ -128,31 +138,33 @@ fn pivot_observations<'a>(
             let row_key = (&key.epoch, &signal.sv);
             let row_idx = *row_index.entry(row_key).or_insert_with(|| {
                 // 记录行的 Time, PRN
-                epochs.push(key.epoch);
+                if return_epochs {
+                    epochs.push(key.epoch);
+                }
                 time.push(epoch_ms);
                 svs.push(signal.sv);
 
                 // 新行索引
-                epochs.len() - 1
+                time.len() - 1
             });
 
             // 列索引：确定 col_idx，惰性填充
-            let code = &signal.observable;
+            let code = signal.observable.to_string();
             let col = code_value.entry(code).or_insert_with(Vec::new);
-            if col.len() < epochs.len() {
-                col.resize(epochs.len(), None);
+            if col.len() < time.len() {
+                col.resize(time.len(), f64::NAN);
             }
 
             // 写入单元格
-            col[row_idx] = Some(signal.value);
+            col[row_idx] = signal.value;
         }
     }
 
     // 对于每一列，补齐长度
-    let total_rows = epochs.len();
+    let total_rows = time.len();
     for col in code_value.values_mut() {
         if col.len() < total_rows {
-            col.resize(total_rows, None);
+            col.resize(total_rows, f64::NAN);
         }
     }
 
@@ -231,20 +243,20 @@ fn _read_obs(
     let mut svs: Vec<SV>;
     if pivot {
         let (_epochs, time, _svs, code_value) =
-            pivot_observations(&obs_rnx, &const_filter, observables.as_ref());
+            pivot_observations(obs_rnx, const_filter, observables.as_ref(), nav_is_given);
         epochs = _epochs;
         svs = _svs;
         let prn: Vec<_> = svs.par_iter().map(|sv| sv.to_string()).collect();
         fields = vec![
-            Field::new("time", DataType::Int64, true),
-            Field::new("prn", DataType::LargeUtf8, true),
+            Field::new("time", DataType::Int64, false),
+            Field::new("prn", DataType::LargeUtf8, false),
         ];
         arrays = vec![
             Arc::new(Int64Array::from(time)),
             Arc::new(LargeStringArray::from(prn)),
         ];
         for (code, col) in code_value.into_iter() {
-            fields.push(Field::new(code.to_string(), DataType::Float64, true));
+            fields.push(Field::new(code, DataType::Float64, false));
             arrays.push(Arc::new(Float64Array::from(col)));
         }
     } else {
@@ -278,10 +290,10 @@ fn _read_obs(
         }
 
         fields = vec![
-            Field::new("time", DataType::Int64, true),
-            Field::new("prn", DataType::LargeUtf8, true),
-            Field::new("code", DataType::LargeUtf8, true),
-            Field::new("value", DataType::Float64, true),
+            Field::new("time", DataType::Int64, false),
+            Field::new("prn", DataType::LargeUtf8, false),
+            Field::new("code", DataType::LargeUtf8, false),
+            Field::new("value", DataType::Float64, false),
         ];
         arrays = vec![
             Arc::new(Int64Array::from(time)),

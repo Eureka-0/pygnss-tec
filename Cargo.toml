@@ -9,12 +9,22 @@ license = "MIT"
 name = "gnss_tec_core"
 crate-type = ["cdylib"]
 
+[features]
+default = []
+custom-alloc = ["tikv-jemallocator", "mimalloc"]
+
 [dependencies]
 arrow = { version = "57.1.0", default-features = false, features = ["pyarrow"] }
 pyo3 = { version = "0.26", features = ["extension-module", "abi3-py39"] }
 rayon = "1.11.0"
 rinex = { version = "0.21.1", features = ["flate2", "nav", "qc"] }
 rustc-hash = "2.1.1"
+
+[target.'cfg(target_family = "unix")'.dependencies]
+tikv-jemallocator = { version = "0.6", optional = true }
+
+[target.'cfg(target_family = "windows")'.dependencies]
+mimalloc = { version = "0.1", optional = true }
 
 [profile.release]
 opt-level = 3

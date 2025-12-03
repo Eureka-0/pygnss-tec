@@ -10,6 +10,7 @@ import polars.selectors as cs
 
 from gnss_tec import read_rinex_obs
 
+from .bias import read_bias
 from .constants import (
     C1_CODES,
     C2_CODES,
@@ -23,7 +24,9 @@ from .constants import (
 
 
 def _resolve_observations_and_bias(
-    lf: pl.LazyFrame, bias_lf: pl.LazyFrame | None = None
+    lf: pl.LazyFrame,
+    bias_lf: pl.LazyFrame | None,
+    rx_bias: Literal["external", "msd", "fallback-msd"] | None,
 ) -> pl.LazyFrame:
     # ---- 1. Unpivot the LazyFrame to long format for easier processing. ----
     long_lf = (
@@ -72,17 +75,11 @@ def _resolve_observations_and_bias(
     )
 
     # ---- 4. Join bias data (if provided). ----
-    all_cols = ["time", "station", "prn", "C1_code", "C2_code"]
-    if bias_lf is not None:
-        all_cols += ["bias_prn", "bias_station"]
-        bias_prn = bias_lf.filter(pl.col("station").is_null())
+    def join_rx_bias(
+        lf: pl.LazyFrame, bias_lf: pl.LazyFrame, how: Literal["inner", "left"] = "inner"
+    ) -> pl.LazyFrame:
         bias_station = bias_lf.drop_nulls("station")
-        resolved_lf = resolved_lf.join(
-            bias_prn.select(
-                "prn", C1_code="obs1", C2_code="obs2", bias_prn="estimated_value"
-            ),
-            on=["prn", "C1_code", "C2_code"],
-        ).join(
+        return lf.join(
             bias_station.select(
                 "station",
                 constellation="prn",
@@ -91,7 +88,39 @@ def _resolve_observations_and_bias(
                 bias_station="estimated_value",
             ),
             on=["station", "constellation", "C1_code", "C2_code"],
+            how=how,
         )
+
+    all_cols = ["time", "station", "prn", "C1_code", "C2_code"]
+    if bias_lf is not None:
+        all_cols += ["bias"]
+
+        bias_prn = bias_lf.filter(pl.col("station").is_null())
+        resolved_lf = resolved_lf.join(
+            bias_prn.select(
+                "prn", C1_code="obs1", C2_code="obs2", bias_prn="estimated_value"
+            ),
+            on=["prn", "C1_code", "C2_code"],
+        )
+
+        if rx_bias == "external":
+            resolved_lf = (
+                join_rx_bias(resolved_lf, bias_lf)
+                .with_columns(
+                    pl.col("bias_prn").add(pl.col("bias_station")).alias("bias")
+                )
+                .drop("bias_prn", "bias_station")
+            )
+        elif rx_bias == "msd":
+            raise NotImplementedError(
+                "MSD receiver bias estimation is not implemented yet."
+            )
+        elif rx_bias == "fallback-msd":
+            raise NotImplementedError(
+                "Fallback MSD receiver bias estimation is not implemented yet."
+            )
+        elif rx_bias is None:
+            resolved_lf = resolved_lf.rename({"bias_prn": "bias"})
 
     # ---- 5. Keep only the highest priority codes for C1 and C2. ----
     resolved_lf = resolved_lf.with_columns(
@@ -286,8 +315,6 @@ def calc_tec_from_df(
         slip_correction_window = 5
 
     if bias_fn is not None:
-        from .bias import read_bias
-
         bias_lf = read_bias(bias_fn, lazy=True).with_columns(
             pl.col("prn").cast(pl.Categorical), pl.col("station").cast(pl.Categorical)
         )
@@ -297,7 +324,7 @@ def calc_tec_from_df(
     lf = lf.with_columns(
         pl.col("station").cast(pl.Categorical), pl.col("prn").cast(pl.Categorical)
     )
-    lf = _resolve_observations_and_bias(lf, bias_lf)
+    lf = _resolve_observations_and_bias(lf, bias_lf, rx_bias)
     lf = _map_frequencies(lf)
 
     f1 = pl.col("C1_freq")
@@ -365,39 +392,26 @@ def calc_tec_from_df(
     )
 
     if bias_fn is not None:
-        lf = (
-            lf.with_columns(
-                # total DCB biases, in TECU
-                (pl.col("bias_prn") + pl.col("bias_station"))
-                .mul(tecu_per_ns)
-                .alias("bias")
-            )
-            .with_columns(
-                # sTEC corrected for DCB biases, in TECU
-                (pl.col("stec") + pl.col("bias")).alias("stec_bias_corrected")
-            )
-            .with_columns(
-                # vTEC, in TECU
-                (pl.col("stec_bias_corrected") / mf).alias("vtec")
-            )
-            .drop("bias_prn", "bias_station")
-        )
-    else:
         lf = lf.with_columns(
-            # vTEC, in TECU
-            (pl.col("stec") / mf).alias("vtec")
+            # total DCB biases, in TECU
+            pl.col("bias").mul(tecu_per_ns)
+        ).with_columns(
+            # sTEC corrected for DCB biases, in TECU
+            (pl.col("stec") + pl.col("bias")).alias("stec")
         )
 
     lf = (
         lf.with_columns(
+            # vTEC, in TECU
+            (pl.col("stec") / mf).alias("vtec"),
             # IPP Latitude in degrees
             ipp_lat.alias("ipp_lat"),
             # IPP Longitude in degrees
             ipp_lon.alias("ipp_lon"),
         )
-        .drop("C1_freq", "C2_freq", "azimuth")
-        .sort("time", "station", "prn")
+        .drop("C1_freq", "C2_freq", "azimuth", "rx_lat", "rx_lon")
         .with_columns(pl.col("station").cast(pl.String), pl.col("prn").cast(pl.String))
+        .sort("time", "station", "prn")
     )
 
     return lf
@@ -458,8 +472,8 @@ def calc_tec(
     header, lf = read_rinex_obs(obs_fn, nav_fn, constellations, station=station)
 
     lf = lf.with_columns(
-        pl.lit(header.rx_geodetic[0]).alias("rx_lat"),
-        pl.lit(header.rx_geodetic[1]).alias("rx_lon"),
+        pl.lit(header.rx_geodetic[0], dtype=pl.Float32).alias("rx_lat"),
+        pl.lit(header.rx_geodetic[1], dtype=pl.Float32).alias("rx_lon"),
     )
 
     return calc_tec_from_df(

@@ -146,22 +146,34 @@ def read_rinex_obs(
         leap_seconds=header_dict["leap_seconds"],
     )
 
-    lf = pl.DataFrame(batch).lazy()
+    df = pl.DataFrame(batch)
+
+    def calc_az_el(df: pl.DataFrame) -> pl.DataFrame:
+        az, el, _ = pm.ecef2aer(
+            df.get_column("sat_x"),
+            df.get_column("sat_y"),
+            df.get_column("sat_z"),
+            rx_lat,
+            rx_lon,
+            rx_alt,
+            deg=True,
+        )
+        return df.with_columns(
+            pl.Series("azimuth", az, dtype=pl.Float32),
+            pl.Series("elevation", el, dtype=pl.Float32),
+        )
 
     if nav_fn is not None:
         ordered_cols += ["azimuth", "elevation"]
-        sat_x = batch["sat_x"].to_numpy()
-        sat_y = batch["sat_y"].to_numpy()
-        sat_z = batch["sat_z"].to_numpy()
-        az, el, _ = pm.ecef2aer(sat_x, sat_y, sat_z, rx_lat, rx_lon, rx_alt, deg=True)
-        lf = lf.with_columns(pl.Series("azimuth", az), pl.Series("elevation", el))
+        df = df.pipe(calc_az_el)
     if pivot:
         ordered_cols += sorted(codes)
     else:
         ordered_cols += ["code", "value"]
 
     lf = (
-        lf.with_columns(
+        df.lazy()
+        .with_columns(
             pl.col("time").cast(pl.Datetime("ms", "UTC")),
             pl.lit(header.marker_name).alias("station"),
         )

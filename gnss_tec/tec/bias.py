@@ -4,7 +4,7 @@ import gzip
 import io
 import re
 from pathlib import Path
-from typing import Iterable, Literal, overload
+from typing import Iterable
 
 import pandas as pd
 import polars as pl
@@ -73,29 +73,13 @@ def _read_bias_file(fn: str | Path) -> pl.LazyFrame:
     return df
 
 
-@overload
-def read_bias(
-    fn: str | Path | Iterable[str | Path], *, lazy: Literal[True]
-) -> pl.LazyFrame: ...
-
-
-@overload
-def read_bias(
-    fn: str | Path | Iterable[str | Path], *, lazy: Literal[False] = False
-) -> pl.DataFrame: ...
-
-
-def read_bias(
-    fn: str | Path | Iterable[str | Path], *, lazy: bool = False
-) -> pl.DataFrame | pl.LazyFrame:
+def read_bias(fn: str | Path | Iterable[str | Path]) -> pl.LazyFrame:
     """Read GNSS DCB bias files into a Polars DataFrame.
     Args:
         fn (str | Path | Iterable[str | Path]): Path(s) to the bias file(s).
-        lazy (bool, optional): Whether to return a lazy DataFrame. Defaults to False.
 
     Returns:
-        (pl.DataFrame | pl.LazyFrame): A DataFrame or LazyFrame containing the bias
-            data.
+        pl.LazyFrame: A LazyFrame containing the bias data.
     """
     if isinstance(fn, (str, Path)):
         fn_list = [str(fn)]
@@ -108,9 +92,4 @@ def read_bias(
         if not Path(f).exists():
             raise FileNotFoundError(f"Bias file not found: {f}")
 
-    df = pl.concat([_read_bias_file(f) for f in fn_list])
-
-    if lazy:
-        return df
-    else:
-        return df.collect()
+    return pl.concat([_read_bias_file(f) for f in fn_list])

@@ -315,7 +315,7 @@ def calc_tec_from_df(
         slip_correction_window = 5
 
     if bias_fn is not None:
-        bias_lf = read_bias(bias_fn, lazy=True).with_columns(
+        bias_lf = read_bias(bias_fn).with_columns(
             pl.col("prn").cast(pl.Categorical), pl.col("station").cast(pl.Categorical)
         )
     else:

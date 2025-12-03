@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Literal, overload
 
-import pandas as pd
 import polars as pl
 import pymap3d as pm
 
@@ -70,58 +69,15 @@ def _handle_fn(fn: str | Path | Iterable[str | Path]) -> list[str]:
     return fn_list
 
 
-def _handle_t_str(t_str: str | None) -> str | None:
-    if t_str is None:
-        return None
-
-    iso_format = "%Y-%m-%d %H:%M:%S"
-
-    if t_str.strip().upper().endswith("GPST"):
-        return pd.to_datetime(t_str.replace("GPST", "")).strftime(iso_format) + " GPST"
-    else:
-        dt = pd.to_datetime(t_str)
-        if dt.tzinfo is None:
-            return dt.strftime(iso_format) + " UTC"
-        else:
-            return dt.tz_convert("UTC").strftime(iso_format) + " UTC"
-
-
-@overload
 def read_rinex_obs(
     obs_fn: str | Path | Iterable[str | Path],
     nav_fn: str | Path | Iterable[str | Path] | None = None,
     constellations: str | None = None,
-    t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     codes: Iterable[str] | None = None,
     *,
+    station: str | None = None,
     pivot: bool = True,
-    lazy: Literal[True],
-) -> tuple[RinexObsHeader, pl.LazyFrame]: ...
-
-
-@overload
-def read_rinex_obs(
-    obs_fn: str | Path | Iterable[str | Path],
-    nav_fn: str | Path | Iterable[str | Path] | None = None,
-    constellations: str | None = None,
-    t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
-    codes: Iterable[str] | None = None,
-    *,
-    pivot: bool = True,
-    lazy: Literal[False] = False,
-) -> tuple[RinexObsHeader, pl.DataFrame]: ...
-
-
-def read_rinex_obs(
-    obs_fn: str | Path | Iterable[str | Path],
-    nav_fn: str | Path | Iterable[str | Path] | None = None,
-    constellations: str | None = None,
-    t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
-    codes: Iterable[str] | None = None,
-    *,
-    pivot: bool = True,
-    lazy: bool = False,
-) -> tuple[RinexObsHeader, pl.DataFrame | pl.LazyFrame]:
+) -> tuple[RinexObsHeader, pl.LazyFrame]:
     """Read RINEX observation file into a Polars DataFrame.
 
     Args:
@@ -134,34 +90,20 @@ def read_rinex_obs(
         constellations (str | None, optional): String of constellation codes to filter
             by. If None, all supported constellations are included. See
             `gnss_tec.rinex.ALL_CONSTELLATIONS` for valid codes. Defaults to None.
-        t_lim (tuple[str | None, str | None] | list[str | None] | None, optional): Time
-            limits for filtering observations. Should be a tuple or list with two
-            elements representing the start and end times. Use None for no limit on
-            either end. Timezone can be specified using ISO 8601 format (e.g.,
-            '2023-01-01 00:00:00Z', '2023-01-01 00:00:00+0800', as long as
-            `pd.to_datetime` can parse it). Additionally, 'GPST' is also supported
-            (e.g., '2023-01-01 00:00:00 GPST'). If no timezone is provided, UTC is
-            assumed. Defaults to None.
         codes (Iterable[str] | None, optional): Specific observation codes to extract
             (e.g., ['C1C', 'L1C']). If None, all available observation types are
             included. Defaults to None.
+        station (str | None, optional): Station name to assign to the DataFrame. If
+            None, the station name from the RINEX header is used. Defaults to None.
         pivot (bool, optional): Whether to pivot the DataFrame so that each observation
             type has its own column. If False, the DataFrame will be in long format with
-            'Code' and 'Value' columns. Pivoted format is generally more convenient for
+            'code' and 'value' columns. Pivoted format is generally more convenient for
             analysis and has better performance. Defaults to True.
-        lazy (bool, optional): Whether to return a `polars.LazyFrame`. Defaults to
-            False.
 
     Returns:
-        (RinexObsHeader, pl.DataFrame | pl.LazyFrame): A Dataclass containing metadata from the RINEX observation file header and a DataFrame or LazyFrame containing the RINEX observation data with following columns.
-            - Time (datetime): Observation timestamp.
-            - Station (str): 4-character station identifier.
-            - PRN (str): Satellite PRN identifier.
-            - Azimuth (float): Satellite azimuth angle in degrees (if nav_fn provided).
-            - Elevation (float): Satellite elevation angle in degrees (if nav_fn
-                provided).
-            - Observations (float): Various observation types (e.g., C1C, C1X,
-                L1C, S1C), each as a separate column.
+        (RinexObsHeader, pl.LazyFrame): A Dataclass containing metadata from the RINEX
+            observation file header and a LazyFrame containing the RINEX observation
+            data.
 
     Raises:
         FileNotFoundError: If the observation or navigation file does not exist.
@@ -182,62 +124,65 @@ def read_rinex_obs(
                     f"Valid codes are: {', '.join(ALL_CONSTELLATIONS.keys())}"
                 )
 
-    if t_lim is None:
-        t_lim = [None, None]
-    else:
-        t_lim = [_handle_t_str(t_lim[0]), _handle_t_str(t_lim[1])]
-
     header_dict, batch = _read_obs(
         obs_fn_list,
         nav_fn=nav_fn_list,
         constellations=constellations,
-        t_lim=tuple(t_lim),
         codes=None if codes is None else list(set(codes)),
         pivot=pivot,
     )
     codes = list(filter(lambda x: re.match(r"[A-Z]\d{1}[A-Z]$", x), batch.schema.names))
-    ordered_cols = ["Time", "Station", "PRN"]
-    rx_x = header_dict["RX_X"]
-    rx_y = header_dict["RX_Y"]
-    rx_z = header_dict["RX_Z"]
+    ordered_cols = ["time", "station", "prn"]
+    rx_x = header_dict["rx_x"]
+    rx_y = header_dict["rx_y"]
+    rx_z = header_dict["rx_z"]
     rx_lat, rx_lon, rx_alt = pm.ecef2geodetic(rx_x, rx_y, rx_z, deg=True)
+
+    header = RinexObsHeader(
+        version=header_dict["version"],
+        constellation=header_dict["constellation"],
+        marker_name=header_dict["station"][:4].strip() if station is None else station,
+        marker_type=header_dict["marker_type"],
+        rx_ecef=(rx_x, rx_y, rx_z),
+        rx_geodetic=(float(rx_lat), float(rx_lon), float(rx_alt)),
+        sampling_interval=header_dict["sampling_interval"],
+        leap_seconds=header_dict["leap_seconds"],
+    )
+
+    df = pl.DataFrame(batch)
+
+    def calc_az_el(df: pl.DataFrame) -> pl.DataFrame:
+        az, el, _ = pm.ecef2aer(
+            df.get_column("sat_x"),
+            df.get_column("sat_y"),
+            df.get_column("sat_z"),
+            rx_lat,
+            rx_lon,
+            rx_alt,
+            deg=True,
+        )
+        return df.with_columns(
+            pl.Series("azimuth", az, dtype=pl.Float32),
+            pl.Series("elevation", el, dtype=pl.Float32),
+        )
+
     if nav_fn is not None:
-        ordered_cols += ["Azimuth", "Elevation"]
-        nav_x = batch["NAV_X"]
-        nav_y = batch["NAV_Y"]
-        nav_z = batch["NAV_Z"]
-        az, el, _ = pm.ecef2aer(nav_x, nav_y, nav_z, rx_lat, rx_lon, rx_alt, deg=True)
-        batch = batch.append_column("Azimuth", az)
-        batch = batch.append_column("Elevation", el)
+        ordered_cols += ["azimuth", "elevation"]
+        df = df.pipe(calc_az_el)
     if pivot:
         ordered_cols += sorted(codes)
     else:
-        ordered_cols += ["Code", "Value"]
+        ordered_cols += ["code", "value"]
 
-    header = RinexObsHeader(
-        version=header_dict["Version"],
-        constellation=header_dict["Constellation"],
-        marker_name=header_dict["Station"],
-        marker_type=header_dict["MarkerType"],
-        rx_ecef=(rx_x, rx_y, rx_z),
-        rx_geodetic=(float(rx_lat), float(rx_lon), float(rx_alt)),
-        sampling_interval=header_dict["SamplingInterval"],
-        leap_seconds=header_dict["LeapSeconds"],
-    )
-
-    df = (
-        pl.DataFrame(batch)
-        .lazy()
+    lf = (
+        df.lazy()
         .with_columns(
-            pl.col("Time").cast(pl.Datetime("ms", "UTC")),
-            pl.lit(header.marker_name).alias("Station"),
+            pl.col("time").cast(pl.Datetime("ms", "UTC")),
+            pl.lit(header.marker_name).alias("station"),
         )
         .fill_nan(None)
         .select(ordered_cols)
-        .sort(["Time", "Station", "PRN"])
+        .sort(["time", "station", "prn"])
     )
 
-    if lazy:
-        return header, df
-    else:
-        return header, df.collect()
+    return header, lf

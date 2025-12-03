@@ -1,18 +1,20 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Iterable, Literal, overload
+from typing import Iterable, Literal
 
 import numpy as np
 import polars as pl
+import polars.selectors as cs
 
-from ..rinex import read_rinex_obs
+from gnss_tec import read_rinex_obs
+
 from .constants import (
     C1_CODES,
     C2_CODES,
     DEFAULT_IPP_HEIGHT,
     DEFAULT_MIN_ELEVATION,
-    DEFAULT_MIN_SNR,
     SIGNAL_FREQ,
     SUPPORTED_CONSTELLATIONS,
     Re,
@@ -23,136 +25,137 @@ from .constants import (
 def _resolve_observations_and_bias(
     lf: pl.LazyFrame, bias_lf: pl.LazyFrame | None = None
 ) -> pl.LazyFrame:
-    # ---- 1. Get valid observation codes (C) present in the LazyFrame. ----
-    columns = lf.collect_schema().names()
-
-    def get_valid_codes(c_codes: dict[str, list[str]]) -> dict[str, list[str]]:
-        valid_codes = {
-            constellation: list(filter(lambda c: c in columns, code_list))
-            for constellation, code_list in c_codes.items()
-        }
-        return valid_codes
-
-    valid_c1_codes = get_valid_codes(C1_CODES)
-    valid_c2_codes = get_valid_codes(C2_CODES)
-
-    # ---- 2. Unpivot the LazyFrame to long format for easier processing. ----
+    # ---- 1. Unpivot the LazyFrame to long format for easier processing. ----
     long_lf = (
-        lf.unpivot(
-            index=["Time", "Station", "PRN"], variable_name="Code", value_name="Value"
+        lf.select(pl.col("time", "station", "prn"), cs.matches(r"^C\d[A-Z]$"))
+        .unpivot(
+            index=["time", "station", "prn"], variable_name="code", value_name="value"
         )
-        .drop_nulls("Value")
-        .with_columns(pl.col("PRN").str.slice(0, 1).alias("Constellation"))
+        .drop_nulls("value")
+        .drop("value")
     )
-    lf = lf.select("Time", "Station", "PRN", "Azimuth", "Elevation")
 
-    # ---- 3. Map observation codes to bands (C1, C2, L1, L2, S1, S2). ----
-    code2band: dict[str, str] = {}
-    c12priority: dict[str, int] = {}
-    c22priority: dict[str, int] = {}
-    for const, codes in valid_c1_codes.items():
+    # ---- 2. Map observation codes to bands (C1, C2). ----
+    code_band: dict[str, str] = {}
+    c1_priority: dict[str, int] = {}
+    c2_priority: dict[str, int] = {}
+    for const, codes in C1_CODES.items():
         for i, code in enumerate(codes):
-            code2band[f"{const}_{code}"] = "C1"
-            c12priority[f"{const}_{code}"] = i
-            code2band[f"{const}_L{code[1:]}"] = "L1"
-            code2band[f"{const}_S{code[1:]}"] = "S1"
-    for const, codes in valid_c2_codes.items():
+            code_band[f"{const}_{code}"] = "C1"
+            c1_priority[f"{const}_{code}"] = i
+    for const, codes in C2_CODES.items():
         for i, code in enumerate(codes):
-            code2band[f"{const}_{code}"] = "C2"
-            c22priority[f"{const}_{code}"] = i
-            code2band[f"{const}_L{code[1:]}"] = "L2"
-            code2band[f"{const}_S{code[1:]}"] = "S2"
+            code_band[f"{const}_{code}"] = "C2"
+            c2_priority[f"{const}_{code}"] = i
 
-    long_lf = long_lf.with_columns(
-        pl.concat_str(pl.col("Constellation"), pl.lit("_"), pl.col("Code"))
-        .replace_strict(code2band, default=None)
-        .alias("Band")
-    ).drop_nulls("Band")
+    long_lf = (
+        long_lf.with_columns(
+            pl.col("prn").cat.slice(0, 1).cast(pl.Categorical).alias("constellation")
+        )
+        .with_columns(
+            pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("code"))
+            .replace_strict(code_band, default=None)
+            .alias("band")
+        )
+        .drop_nulls("band")
+    )
 
-    # ---- 4. Pivot back to wide format with resolved C bands as columns. ----
+    # ---- 3. Pivot back to wide format with resolved C bands as columns. ----
     resolved_lf = (
-        long_lf.group_by("Time", "Station", "Constellation", "PRN")
+        long_lf.group_by("time", "station", "constellation", "prn")
         .agg(
-            pl.col("Code").filter(pl.col("Band") == "C1").alias("C1_Code"),
-            pl.col("Code").filter(pl.col("Band") == "C2").alias("C2_Code"),
+            pl.col("code").filter(pl.col("band") == "C1").alias("C1_code"),
+            pl.col("code").filter(pl.col("band") == "C2").alias("C2_code"),
         )
-        .explode("C1_Code")
-        .explode("C2_Code")
+        .explode("C1_code")
+        .explode("C2_code")
     )
 
-    # ---- 5. Join bias data (if provided). ----
+    # ---- 4. Join bias data (if provided). ----
+    all_cols = ["time", "station", "prn", "C1_code", "C2_code"]
     if bias_lf is not None:
-        bias_prn = bias_lf.filter(pl.col("STATION").is_null())
-        bias_station = bias_lf.drop_nulls("STATION")
+        all_cols += ["bias_prn", "bias_station"]
+        bias_prn = bias_lf.filter(pl.col("station").is_null())
+        bias_station = bias_lf.drop_nulls("station")
         resolved_lf = resolved_lf.join(
             bias_prn.select(
-                "PRN", C1_Code="OBS1", C2_Code="OBS2", Bias_PRN="ESTIMATED_VALUE"
+                "prn", C1_code="obs1", C2_code="obs2", bias_prn="estimated_value"
             ),
-            on=["PRN", "C1_Code", "C2_Code"],
+            on=["prn", "C1_code", "C2_code"],
         ).join(
             bias_station.select(
-                Station="STATION",
-                Constellation="PRN",
-                C1_Code="OBS1",
-                C2_Code="OBS2",
-                Bias_Station="ESTIMATED_VALUE",
+                "station",
+                constellation="prn",
+                C1_code="obs1",
+                C2_code="obs2",
+                bias_station="estimated_value",
             ),
-            on=["Station", "Constellation", "C1_Code", "C2_Code"],
+            on=["station", "constellation", "C1_code", "C2_code"],
         )
 
-    # ---- 6. Keep only the highest priority codes for C1 and C2. ----
-    resolved_lf = (
-        resolved_lf.with_columns(
-            pl.concat_str(pl.col("Constellation"), pl.lit("_"), pl.col("C1_Code"))
-            .replace_strict(c12priority, default=None)
-            .alias("C1_Priority"),
-            pl.concat_str(pl.col("Constellation"), pl.lit("_"), pl.col("C2_Code"))
-            .replace_strict(c22priority, default=None)
-            .alias("C2_Priority"),
-        )
-        .group_by("Time", "Station", "PRN")
-        .agg(
-            pl.all()
-            .exclude("C1_Priority", "C2_Priority", "Constellation")
-            .sort_by(
-                pl.col("C1_Priority") * 2 + pl.col("C2_Priority"), descending=False
-            )
-            .first()
-        )
+    # ---- 5. Keep only the highest priority codes for C1 and C2. ----
+    resolved_lf = resolved_lf.with_columns(
+        pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("C1_code"))
+        .replace_strict(c1_priority, default=None)
+        .alias("C1_priority"),
+        pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("C2_code"))
+        .replace_strict(c2_priority, default=None)
+        .alias("C2_priority"),
+    ).select(
+        pl.col(all_cols)
+        .sort_by(pl.col("C1_priority") * 2 + pl.col("C2_priority"), descending=False)
+        .first()
+        .over("time", "station", "prn", mapping_strategy="explode")
     )
 
-    # ---- 7. Join back the observation values for the resolved codes. ----
+    # ---- 6. Join back the observation values for the resolved codes. ----
+    def build_extract_expr(target_col_name: str, code_col_name: str) -> pl.Expr:
+        """
+        生成一个表达式：根据 code_col_name 列中存储的列名，去提取对应列的值。
+        例如：如果 C1_Code 列的值是 "C1C"，则提取 "C1C" 列的值。
+        """
+        expr = None
+        # 遍历所有可能的列名，构建 when-then 链
+        available_cols = filter(
+            lambda x: re.match(r"^[CLS]\d[A-Z]$", x), lf.collect_schema().names()
+        )
+        for col in available_cols:
+            cond = pl.col(code_col_name) == col
+            val = pl.col(col)
+            if expr is None:
+                expr = pl.when(cond).then(val)
+            else:
+                expr = expr.when(cond).then(val)
+        if expr is None:
+            return pl.lit(None).alias(target_col_name)
+        return expr.otherwise(None).alias(target_col_name)
+
+    def l_code(col: str) -> pl.Expr:
+        return pl.concat_str(pl.lit("L"), pl.col(col).str.slice(1, None))
+
     resolved_lf = (
-        resolved_lf.join(lf, on=["Time", "Station", "PRN"])
-        .unique(["Time", "Station", "PRN"])
-        .with_columns(
-            pl.col("C1_Code").str.slice(1, None).alias("C1_Band"),
-            pl.col("C2_Code").str.slice(1, None).alias("C2_Band"),
-        )
-        .with_columns(
-            pl.concat_str(pl.lit("L"), pl.col("C1_Band")).alias("L1_Code"),
-            pl.concat_str(pl.lit("L"), pl.col("C2_Band")).alias("L2_Code"),
-            pl.concat_str(pl.lit("S"), pl.col("C1_Band")).alias("S1_Code"),
-            pl.concat_str(pl.lit("S"), pl.col("C2_Band")).alias("S2_Code"),
-        )
-        .drop("C1_Band", "C2_Band")
-    )
-
-    def match_values(code_col: str, lf: pl.LazyFrame) -> pl.LazyFrame:
-        return lf.join(
-            long_lf.select("Time", "Station", "PRN", "Code", "Value").rename(
-                {"Code": code_col, "Value": code_col[:2]}
+        resolved_lf.join(
+            lf.select(
+                "time",
+                "station",
+                "prn",
+                "azimuth",
+                "elevation",
+                cs.matches(r"^[CLS]\d[A-Z]$"),
             ),
-            on=["Time", "Station", "PRN", code_col],
+            on=["time", "station", "prn"],
         )
-
-    resolved_lf = match_values("C1_Code", resolved_lf)
-    resolved_lf = match_values("C2_Code", resolved_lf)
-    resolved_lf = match_values("L1_Code", resolved_lf)
-    resolved_lf = match_values("L2_Code", resolved_lf)
-    resolved_lf = match_values("S1_Code", resolved_lf)
-    resolved_lf = match_values("S2_Code", resolved_lf)
-    resolved_lf = resolved_lf.drop("L1_Code", "L2_Code", "S1_Code", "S2_Code")
+        .with_columns(
+            l_code("C1_code").alias("L1_code"), l_code("C2_code").alias("L2_code")
+        )
+        .with_columns(
+            build_extract_expr("C1", "C1_code"),
+            build_extract_expr("C2", "C2_code"),
+            build_extract_expr("L1", "L1_code"),
+            build_extract_expr("L2", "L2_code"),
+        )
+        .drop(cs.matches(r"^[A-Z]\d[A-Z]$"), cs.matches(r"^[LS][12]_code$"))
+    )
 
     return resolved_lf
 
@@ -170,21 +173,14 @@ def _map_frequencies(lf: pl.LazyFrame) -> pl.LazyFrame:
         "G_5": SIGNAL_FREQ["G"]["L5"],
     }
 
-    def freq_col(code_col: str) -> pl.Expr:
-        expr = pl.when(False).then(None)
-        for constellation in SUPPORTED_CONSTELLATIONS:
-            expr = expr.when(pl.col("PRN").str.starts_with(constellation)).then(
-                pl.col(code_col)
-                .str.slice(1, 1)
-                .str.pad_start(2, "_")
-                .str.pad_start(3, constellation)
-                .replace_strict(code_freq_map, default=None)
-            )
-        return expr
+    def map_freq(col: str) -> pl.Expr:
+        return pl.concat_str(
+            pl.col("prn").cat.slice(0, 1), pl.lit("_"), pl.col(col).str.slice(1, 1)
+        ).replace_strict(code_freq_map, default=None)
 
     return lf.with_columns(
-        freq_col("C1_Code").alias("C1_Freq"), freq_col("C2_Code").alias("C2_Freq")
-    ).drop("C1_Code", "C2_Code")
+        map_freq("C1_code").alias("C1_freq"), map_freq("C2_code").alias("C2_freq")
+    ).drop("C1_code", "C2_code")
 
 
 def _single_layer_model(
@@ -223,44 +219,14 @@ def _single_layer_model(
     return mf, ipp_lat.degrees(), ipp_lon.degrees()
 
 
-@overload
-def calc_tec(
-    obs_fn: str | Path | Iterable[str | Path],
-    nav_fn: str | Path | Iterable[str | Path],
-    bias_fn: str | Path | Iterable[str | Path] | None = None,
-    rx_bias: Literal["external", "msd"] = "external",
-    constellations: str | None = None,
-    t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
-    *,
-    lazy: Literal[True],
-) -> pl.LazyFrame: ...
-
-
-@overload
-def calc_tec(
-    obs_fn: str | Path | Iterable[str | Path],
-    nav_fn: str | Path | Iterable[str | Path],
-    bias_fn: str | Path | Iterable[str | Path] | None = None,
-    rx_bias: Literal["external", "msd"] = "external",
-    constellations: str | None = None,
-    t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
-    *,
-    lazy: Literal[False] = False,
-) -> pl.DataFrame: ...
-
-
 def calc_tec(
     obs_fn: str | Path | Iterable[str | Path],
     nav_fn: str | Path | Iterable[str | Path],
     bias_fn: str | Path | Iterable[str | Path] | None = None,
     rx_bias: Literal["external", "msd", "fallback-msd"] = "fallback-msd",
     constellations: str | None = None,
-    t_lim: tuple[str | None, str | None] | list[str | None] | None = None,
     min_elevation: float = DEFAULT_MIN_ELEVATION,
-    min_snr: float = DEFAULT_MIN_SNR,
-    *,
-    lazy: bool = False,
-) -> pl.LazyFrame | pl.DataFrame:
+) -> pl.LazyFrame:
     """
     Calculate the Total Electron Content (TEC) from RINEX observation and navigation files.
 
@@ -281,24 +247,11 @@ def calc_tec(
               Otherwise, apply the MSD method.
         constellations (str | None, optional): Constellations to consider. If None, all
             supported constellations are used. Defaults to None.
-        t_lim (tuple[str | None, str | None] | list[str | None] | None, optional): Time
-            limits for TEC calculation. Should be a tuple or list with two
-            elements representing the start and end times. Use None for no limit on
-            either end. Timezone can be specified using ISO 8601 format (e.g.,
-            '2023-01-01 00:00:00Z', '2023-01-01 00:00:00+0800', as long as
-            `pd.to_datetime` can parse it). Additionally, 'GPST' is also supported
-            (e.g., '2023-01-01 00:00:00 GPST'). If no timezone is provided, UTC is
-            assumed. Defaults to None.
         min_elevation (float, optional): Minimum satellite elevation angle in degrees
             for including observations. Defaults to DEFAULT_MIN_ELEVATION (40.0).
-        min_snr (float, optional): Minimum signal-to-noise ratio in dB-Hz for
-            including observations. Defaults to DEFAULT_MIN_SNR (30.0).
-        lazy (bool, optional): Whether to return a `polars.LazyFrame`. Defaults to
-            False.
 
     Returns:
-        (pl.LazyFrame | pl.DataFrame): A LazyFrame or DataFrame containing the
-            calculated TEC values.
+        pl.LazyFrame: A LazyFrame containing the calculated TEC values.
     """
     if constellations is not None:
         constellations = constellations.upper()
@@ -311,94 +264,135 @@ def calc_tec(
     else:
         constellations = "".join(SUPPORTED_CONSTELLATIONS.keys())
 
-    header, lf = read_rinex_obs(obs_fn, nav_fn, constellations, t_lim, lazy=True)
-    rx_lat_deg, rx_lon_deg, _ = header.rx_geodetic
-    mf, ipp_lat, ipp_lon = _single_layer_model(
-        pl.col("Azimuth"), pl.col("Elevation"), pl.lit(rx_lat_deg), pl.lit(rx_lon_deg)
-    )
+    header, lf = read_rinex_obs(obs_fn, nav_fn, constellations)
+
+    # Parameters based on sampling interval (1s or 30s)
+    if header.sampling_interval == 1:
+        arc_interval = pl.duration(minutes=1)
+        slip_tec_threshold = 1  # TECU
+        slip_correction_window = 20
+    else:
+        arc_interval = pl.duration(minutes=5)
+        slip_tec_threshold = 5  # TECU
+        slip_correction_window = 5
+
+    # Filter by minimum elevation angle and drop D-code observations
+    lf = lf.filter(pl.col("elevation") >= min_elevation).drop(cs.matches(r"^D\d[A-Z]$"))
 
     if bias_fn is not None:
         from .bias import read_bias
 
-        bias_lf = read_bias(bias_fn, lazy=True)
+        bias_lf = read_bias(bias_fn, lazy=True).with_columns(
+            pl.col("prn").cast(pl.Categorical), pl.col("station").cast(pl.Categorical)
+        )
     else:
         bias_lf = None
 
+    lf = lf.with_columns(
+        pl.col("station").cast(pl.Categorical), pl.col("prn").cast(pl.Categorical)
+    )
     lf = _resolve_observations_and_bias(lf, bias_lf)
     lf = _map_frequencies(lf)
-    lf = lf.filter(
-        pl.col("Elevation") >= min_elevation,
-        pl.col("S1") >= min_snr,
-        pl.col("S2") >= min_snr,
-    ).drop("S1", "S2")
 
-    f1 = pl.col("C1_Freq")
-    f2 = pl.col("C2_Freq")
+    f1 = pl.col("C1_freq")
+    f2 = pl.col("C2_freq")
     coeff = f1**2 * f2**2 / (f1**2 - f2**2) / 40.3e16
     tecu_per_ns = 1e-9 * c * coeff
 
     lf = (
-        lf.with_columns(
+        lf.drop_nulls()
+        .with_columns(
             # sTEC from pseudorange, in TECU
-            (pl.col("C2") - pl.col("C1")).mul(coeff).alias("sTEC_g"),
+            (pl.col("C2") - pl.col("C1")).mul(coeff).alias("stec_g"),
             # sTEC from carrier phase, in TECU
-            (pl.col("L1") / f1 - pl.col("L2") / f2).mul(c * coeff).alias("sTEC_p"),
+            (pl.col("L1") / f1 - pl.col("L2") / f2).mul(c * coeff).alias("stec_p"),
+        )
+        .drop("C1", "C2", "L1", "L2")
+        # Identify arcs based on time gaps
+        .with_columns(
+            pl.col("time")
+            .diff()
+            .ge(arc_interval)
+            .fill_null(False)
+            .cum_sum()
+            .over("station", "prn")
+            .alias("arc_id")
+        )
+        # Detect and correct cycle slips to previous windowed mean in each arc
+        .with_columns(
+            pl.when(
+                pl.col("stec_p").diff().abs().ge(slip_tec_threshold).fill_null(False)
+            )
+            .then(
+                pl.col("stec_p")
+                - pl.col("stec_p").rolling_mean(slip_correction_window).shift(1)
+            )
+            .fill_null(0)
+            .cum_sum()
+            .over("station", "prn", "arc_id")
+            .alias("slipped_value")
+        )
+        .with_columns(pl.col("stec_p").sub(pl.col("slipped_value")).alias("stec_p"))
+        .drop("slipped_value")
+        # Level phase sTEC to pseudorange sTEC using elevation-based weighted offset
+        .with_columns(
+            (pl.col("stec_g") - pl.col("stec_p")).alias("raw_offset"),
+            pl.col("elevation").radians().sin().pow(2).alias("weight"),
         )
         .with_columns(
-            (pl.col("sTEC_g") - pl.col("sTEC_p")).alias("Raw_Offset"),
-            pl.col("Elevation").radians().sin().pow(2).alias("Weight"),
-        )
-        .with_columns(
-            pl.col("Raw_Offset")
-            .mul(pl.col("Weight"))
+            pl.col("raw_offset")
+            .mul(pl.col("weight"))
             .sum()
-            .truediv(pl.col("Weight").sum())
-            .over("PRN")
-            .alias("Offset")
+            .truediv(pl.col("weight").sum())
+            .over("station", "prn", "arc_id")
+            .alias("offset")
         )
         .with_columns(
             # levelled sTEC, in TECU
-            (pl.col("sTEC_p") + pl.col("Offset")).alias("sTEC")
+            (pl.col("stec_p") + pl.col("offset")).alias("stec")
         )
-        .drop("C1", "C2", "L1", "L2", "Raw_Offset", "Weight", "Offset")
+        .drop("raw_offset", "weight", "offset", "arc_id")
+    )
+
+    rx_lat, rx_lon, _ = header.rx_geodetic
+    mf, ipp_lat, ipp_lon = _single_layer_model(
+        pl.col("azimuth"), pl.col("elevation"), pl.lit(rx_lat), pl.lit(rx_lon)
     )
 
     if bias_fn is not None:
         lf = (
             lf.with_columns(
                 # total DCB biases, in TECU
-                (pl.col("Bias_PRN") + pl.col("Bias_Station"))
+                (pl.col("bias_prn") + pl.col("bias_station"))
                 .mul(tecu_per_ns)
-                .alias("Bias")
+                .alias("bias")
             )
             .with_columns(
                 # sTEC corrected for DCB biases, in TECU
-                (pl.col("sTEC") + pl.col("Bias")).alias("sTEC_bias_corrected")
+                (pl.col("stec") + pl.col("bias")).alias("stec_bias_corrected")
             )
             .with_columns(
                 # vTEC, in TECU
-                (pl.col("sTEC_bias_corrected") / mf).alias("vTEC")
+                (pl.col("stec_bias_corrected") / mf).alias("vtec")
             )
-            .drop("Bias_PRN", "Bias_Station")
+            .drop("bias_prn", "bias_station")
         )
     else:
         lf = lf.with_columns(
             # vTEC, in TECU
-            (pl.col("sTEC") / mf).alias("vTEC")
+            (pl.col("stec") / mf).alias("vtec")
         )
 
     lf = (
         lf.with_columns(
             # IPP Latitude in degrees
-            ipp_lat.alias("IPP_Lat"),
+            ipp_lat.alias("ipp_lat"),
             # IPP Longitude in degrees
-            ipp_lon.alias("IPP_Lon"),
+            ipp_lon.alias("ipp_lon"),
         )
-        .drop("C1_Freq", "C2_Freq", "Azimuth")
-        .sort("Time", "Station", "PRN")
+        .drop("C1_freq", "C2_freq", "azimuth")
+        .sort("time", "station", "prn")
+        .with_columns(pl.col("station").cast(pl.String), pl.col("prn").cast(pl.String))
     )
 
-    if lazy:
-        return lf
-    else:
-        return lf.collect()
+    return lf

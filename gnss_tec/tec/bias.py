@@ -45,14 +45,14 @@ def _read_bias_file(fn: str | Path) -> pl.LazyFrame:
         buf = io.StringIO("".join(lines[header_line_idx + 1 : footer_line_idx]))
 
     colspecs = [(m.start(), m.end()) for m in re.finditer(r"\S+", header_str)]
-    cols = [col.strip("*_") for col in header_str.split()]
+    cols = [col.strip("*_").lower() for col in header_str.split()]
     df = (
         pl.from_pandas(pd.read_fwf(buf, colspecs=colspecs, names=cols, header=None))
         .lazy()
-        .drop("BIAS", "SVN")
+        .drop("bias", "svn")
     )
 
-    for col in ["BIAS_START", "BIAS_END"]:
+    for col in ["bias_start", "bias_end"]:
         df = (
             df.with_columns(pl.col(col).str.split(":").alias("parts"))
             .with_columns(
@@ -108,8 +108,7 @@ def read_bias(
         if not Path(f).exists():
             raise FileNotFoundError(f"Bias file not found: {f}")
 
-    df_list = [_read_bias_file(f) for f in fn_list]
-    df = pl.concat(df_list)
+    df = pl.concat([_read_bias_file(f) for f in fn_list])
 
     if lazy:
         return df

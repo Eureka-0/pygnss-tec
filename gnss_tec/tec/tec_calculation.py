@@ -15,7 +15,6 @@ from .constants import (
     C2_CODES,
     DEFAULT_IPP_HEIGHT,
     DEFAULT_MIN_ELEVATION,
-    DEFAULT_MIN_SNR,
     SIGNAL_FREQ,
     SUPPORTED_CONSTELLATIONS,
     Re,
@@ -24,7 +23,7 @@ from .constants import (
 
 
 def _resolve_observations_and_bias(
-    lf: pl.LazyFrame, min_snr: float, bias_lf: pl.LazyFrame | None = None
+    lf: pl.LazyFrame, bias_lf: pl.LazyFrame | None = None
 ) -> pl.LazyFrame:
     # ---- 1. Unpivot the LazyFrame to long format for easier processing. ----
     long_lf = (
@@ -73,7 +72,9 @@ def _resolve_observations_and_bias(
     )
 
     # ---- 4. Join bias data (if provided). ----
+    all_cols = ["time", "station", "prn", "C1_code", "C2_code"]
     if bias_lf is not None:
+        all_cols += ["bias_prn", "bias_station"]
         bias_prn = bias_lf.filter(pl.col("station").is_null())
         bias_station = bias_lf.drop_nulls("station")
         resolved_lf = resolved_lf.join(
@@ -101,19 +102,13 @@ def _resolve_observations_and_bias(
         .replace_strict(c2_priority, default=None)
         .alias("C2_priority"),
     ).select(
-        pl.col(
-            "time", "station", "prn", "C1_code", "C2_code", "bias_prn", "bias_station"
-        )
+        pl.col(all_cols)
         .sort_by(pl.col("C1_priority") * 2 + pl.col("C2_priority"), descending=False)
         .first()
         .over("time", "station", "prn", mapping_strategy="explode")
     )
 
     # ---- 6. Join back the observation values for the resolved codes. ----
-    lf = lf.select(
-        "time", "station", "prn", "azimuth", "elevation", cs.matches(r"^[CLS]\d[A-Z]$")
-    )
-
     def build_extract_expr(target_col_name: str, code_col_name: str) -> pl.Expr:
         """
         生成一个表达式：根据 code_col_name 列中存储的列名，去提取对应列的值。
@@ -125,7 +120,6 @@ def _resolve_observations_and_bias(
             lambda x: re.match(r"^[CLS]\d[A-Z]$", x), lf.collect_schema().names()
         )
         for col in available_cols:
-            # 只有当 DataFrame 中实际存在该列时才处理
             cond = pl.col(code_col_name) == col
             val = pl.col(col)
             if expr is None:
@@ -136,30 +130,31 @@ def _resolve_observations_and_bias(
             return pl.lit(None).alias(target_col_name)
         return expr.otherwise(None).alias(target_col_name)
 
+    def l_code(col: str) -> pl.Expr:
+        return pl.concat_str(pl.lit("L"), pl.col(col).str.slice(1, None))
+
     resolved_lf = (
-        resolved_lf.join(lf, on=["time", "station", "prn"])
-        .with_columns(
-            pl.col("C1_code").str.slice(1, None).alias("C1_band"),
-            pl.col("C2_code").str.slice(1, None).alias("C2_band"),
+        resolved_lf.join(
+            lf.select(
+                "time",
+                "station",
+                "prn",
+                "azimuth",
+                "elevation",
+                cs.matches(r"^[CLS]\d[A-Z]$"),
+            ),
+            on=["time", "station", "prn"],
         )
         .with_columns(
-            pl.concat_str(pl.lit("L"), pl.col("C1_band")).alias("L1_code"),
-            pl.concat_str(pl.lit("L"), pl.col("C2_band")).alias("L2_code"),
-            pl.concat_str(pl.lit("S"), pl.col("C1_band")).alias("S1_code"),
-            pl.concat_str(pl.lit("S"), pl.col("C2_band")).alias("S2_code"),
+            l_code("C1_code").alias("L1_code"), l_code("C2_code").alias("L2_code")
         )
-        .drop("C1_band", "C2_band")
         .with_columns(
             build_extract_expr("C1", "C1_code"),
             build_extract_expr("C2", "C2_code"),
             build_extract_expr("L1", "L1_code"),
             build_extract_expr("L2", "L2_code"),
-            build_extract_expr("S1", "S1_code"),
-            build_extract_expr("S2", "S2_code"),
         )
         .drop(cs.matches(r"^[A-Z]\d[A-Z]$"), cs.matches(r"^[LS][12]_code$"))
-        .filter(pl.col("S1") >= min_snr, pl.col("S2") >= min_snr)
-        .drop("S1", "S2")
     )
 
     return resolved_lf
@@ -178,21 +173,13 @@ def _map_frequencies(lf: pl.LazyFrame) -> pl.LazyFrame:
         "G_5": SIGNAL_FREQ["G"]["L5"],
     }
 
+    def map_freq(col: str) -> pl.Expr:
+        return pl.concat_str(
+            pl.col("prn").cat.slice(0, 1), pl.lit("_"), pl.col(col).str.slice(1, 1)
+        ).replace_strict(code_freq_map, default=None)
+
     return lf.with_columns(
-        pl.concat_str(
-            pl.col("prn").cat.slice(0, 1),
-            pl.lit("_"),
-            pl.col("C1_code").str.slice(1, 1),
-        )
-        .replace_strict(code_freq_map, default=None)
-        .alias("C1_freq"),
-        pl.concat_str(
-            pl.col("prn").cat.slice(0, 1),
-            pl.lit("_"),
-            pl.col("C2_code").str.slice(1, 1),
-        )
-        .replace_strict(code_freq_map, default=None)
-        .alias("C2_freq"),
+        map_freq("C1_code").alias("C1_freq"), map_freq("C2_code").alias("C2_freq")
     ).drop("C1_code", "C2_code")
 
 
@@ -239,7 +226,6 @@ def calc_tec(
     rx_bias: Literal["external", "msd", "fallback-msd"] = "fallback-msd",
     constellations: str | None = None,
     min_elevation: float = DEFAULT_MIN_ELEVATION,
-    min_snr: float = DEFAULT_MIN_SNR,
 ) -> pl.LazyFrame:
     """
     Calculate the Total Electron Content (TEC) from RINEX observation and navigation files.
@@ -263,10 +249,6 @@ def calc_tec(
             supported constellations are used. Defaults to None.
         min_elevation (float, optional): Minimum satellite elevation angle in degrees
             for including observations. Defaults to DEFAULT_MIN_ELEVATION (40.0).
-        min_snr (float, optional): Minimum signal-to-noise ratio in dB-Hz for
-            including observations. Defaults to DEFAULT_MIN_SNR (30.0).
-        lazy (bool, optional): Whether to return a `polars.LazyFrame`. Defaults to
-            False.
 
     Returns:
         pl.LazyFrame: A LazyFrame containing the calculated TEC values.
@@ -303,7 +285,7 @@ def calc_tec(
     lf = lf.with_columns(
         pl.col("station").cast(pl.Categorical), pl.col("prn").cast(pl.Categorical)
     )
-    lf = _resolve_observations_and_bias(lf, min_snr, bias_lf)
+    lf = _resolve_observations_and_bias(lf, bias_lf)
     lf = _map_frequencies(lf)
 
     f1 = pl.col("C1_freq")

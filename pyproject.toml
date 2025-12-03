@@ -40,6 +40,7 @@ python-packages = ["gnss_tec"]
 
 [dependency-groups]
 dev = [
+    "altair>=6.0.0",
     "ipykernel>=6.31.0",
     "matplotlib>=3.9.4",
     "pytest>=8.4.2",

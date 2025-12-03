@@ -265,10 +265,16 @@ def calc_tec(
         constellations = "".join(SUPPORTED_CONSTELLATIONS.keys())
 
     header, lf = read_rinex_obs(obs_fn, nav_fn, constellations)
+
+    # Parameters based on sampling interval (1s or 30s)
     if header.sampling_interval == 1:
         arc_interval = pl.duration(minutes=1)
+        slip_tec_threshold = 1  # TECU
+        slip_correction_window = 20
     else:
         arc_interval = pl.duration(minutes=5)
+        slip_tec_threshold = 5  # TECU
+        slip_correction_window = 5
 
     # Filter by minimum elevation angle and drop D-code observations
     lf = lf.filter(pl.col("elevation") >= min_elevation).drop(cs.matches(r"^D\d[A-Z]$"))
@@ -294,22 +300,44 @@ def calc_tec(
     tecu_per_ns = 1e-9 * c * coeff
 
     lf = (
-        lf.with_columns(
+        lf.drop_nulls()
+        .with_columns(
             # sTEC from pseudorange, in TECU
             (pl.col("C2") - pl.col("C1")).mul(coeff).alias("stec_g"),
             # sTEC from carrier phase, in TECU
             (pl.col("L1") / f1 - pl.col("L2") / f2).mul(c * coeff).alias("stec_p"),
         )
+        .drop("C1", "C2", "L1", "L2")
+        # Identify arcs based on time gaps
         .with_columns(
-            (pl.col("stec_g") - pl.col("stec_p")).alias("raw_offset"),
-            pl.col("elevation").radians().sin().pow(2).alias("weight"),
             pl.col("time")
             .diff()
             .ge(arc_interval)
             .fill_null(False)
             .cum_sum()
             .over("station", "prn")
-            .alias("arc_id"),
+            .alias("arc_id")
+        )
+        # Detect and correct cycle slips to previous windowed mean in each arc
+        .with_columns(
+            pl.when(
+                pl.col("stec_p").diff().abs().ge(slip_tec_threshold).fill_null(False)
+            )
+            .then(
+                pl.col("stec_p")
+                - pl.col("stec_p").rolling_mean(slip_correction_window).shift(1)
+            )
+            .fill_null(0)
+            .cum_sum()
+            .over("station", "prn", "arc_id")
+            .alias("slipped_value")
+        )
+        .with_columns(pl.col("stec_p").sub(pl.col("slipped_value")).alias("stec_p"))
+        .drop("slipped_value")
+        # Level phase sTEC to pseudorange sTEC using elevation-based weighted offset
+        .with_columns(
+            (pl.col("stec_g") - pl.col("stec_p")).alias("raw_offset"),
+            pl.col("elevation").radians().sin().pow(2).alias("weight"),
         )
         .with_columns(
             pl.col("raw_offset")
@@ -323,7 +351,7 @@ def calc_tec(
             # levelled sTEC, in TECU
             (pl.col("stec_p") + pl.col("offset")).alias("stec")
         )
-        .drop("C1", "C2", "L1", "L2", "raw_offset", "weight", "offset", "arc_id")
+        .drop("raw_offset", "weight", "offset", "arc_id")
     )
 
     rx_lat, rx_lon, _ = header.rx_geodetic

@@ -75,6 +75,7 @@ def read_rinex_obs(
     constellations: str | None = None,
     codes: Iterable[str] | None = None,
     *,
+    station: str | None = None,
     pivot: bool = True,
 ) -> tuple[RinexObsHeader, pl.LazyFrame]:
     """Read RINEX observation file into a Polars DataFrame.
@@ -92,6 +93,8 @@ def read_rinex_obs(
         codes (Iterable[str] | None, optional): Specific observation codes to extract
             (e.g., ['C1C', 'L1C']). If None, all available observation types are
             included. Defaults to None.
+        station (str | None, optional): Station name to assign to the DataFrame. If
+            None, the station name from the RINEX header is used. Defaults to None.
         pivot (bool, optional): Whether to pivot the DataFrame so that each observation
             type has its own column. If False, the DataFrame will be in long format with
             'code' and 'value' columns. Pivoted format is generally more convenient for
@@ -138,7 +141,7 @@ def read_rinex_obs(
     header = RinexObsHeader(
         version=header_dict["version"],
         constellation=header_dict["constellation"],
-        marker_name=header_dict["station"][:4].strip(),
+        marker_name=header_dict["station"][:4].strip() if station is None else station,
         marker_type=header_dict["marker_type"],
         rx_ecef=(rx_x, rx_y, rx_z),
         rx_geodetic=(float(rx_lat), float(rx_lon), float(rx_alt)),

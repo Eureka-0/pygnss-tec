@@ -117,7 +117,7 @@ def _resolve_observations_and_bias(
         expr = None
         # 遍历所有可能的列名，构建 when-then 链
         available_cols = filter(
-            lambda x: re.match(r"^[CLS]\d[A-Z]$", x), lf.collect_schema().names()
+            lambda x: re.match(r"^[CL]\d[A-Z]$", x), lf.collect_schema().names()
         )
         for col in available_cols:
             cond = pl.col(code_col_name) == col
@@ -139,9 +139,11 @@ def _resolve_observations_and_bias(
                 "time",
                 "station",
                 "prn",
+                "rx_lat",
+                "rx_lon",
                 "azimuth",
                 "elevation",
-                cs.matches(r"^[CLS]\d[A-Z]$"),
+                cs.matches(r"^[CL]\d[A-Z]$"),
             ),
             on=["time", "station", "prn"],
         )
@@ -154,7 +156,7 @@ def _resolve_observations_and_bias(
             build_extract_expr("L1", "L1_code"),
             build_extract_expr("L2", "L2_code"),
         )
-        .drop(cs.matches(r"^[A-Z]\d[A-Z]$"), cs.matches(r"^[LS][12]_code$"))
+        .drop(cs.matches(r"^[A-Z]\d[A-Z]$"), cs.matches(r"^[L][12]_code$"))
     )
 
     return resolved_lf
@@ -219,55 +221,62 @@ def _single_layer_model(
     return mf, ipp_lat.degrees(), ipp_lon.degrees()
 
 
-def calc_tec(
-    obs_fn: str | Path | Iterable[str | Path],
-    nav_fn: str | Path | Iterable[str | Path],
+def calc_tec_from_df(
+    df: pl.DataFrame | pl.LazyFrame,
+    sampling_interval: int | None = None,
     bias_fn: str | Path | Iterable[str | Path] | None = None,
-    rx_bias: Literal["external", "msd", "fallback-msd"] = "fallback-msd",
-    constellations: str | None = None,
+    rx_bias: Literal["external", "msd", "fallback-msd"] | None = "fallback-msd",
     min_elevation: float = DEFAULT_MIN_ELEVATION,
 ) -> pl.LazyFrame:
     """
-    Calculate the Total Electron Content (TEC) from RINEX observation and navigation files.
+    Calculate the Total Electron Content (TEC) from a Polars DataFrame or LazyFrame
+        containing GNSS observations.
 
     Args:
-        obs_fn (str | Path | Iterable[str | Path]): Path(s) to the RINEX observation
-            file(s). These files must be from the same station, otherwise the output
-            DataFrame will be incorrect.
-        nav_fn (str | Path | Iterable[str | Path]): Path(s) to the RINEX navigation
-            file(s).
+        df (pl.DataFrame | pl.LazyFrame): Input DataFrame or LazyFrame containing GNSS
+            observations.
+        sampling_interval (int | None, optional): Sampling interval in seconds. If
+            None, it will be inferred from the data. Defaults to None.
         bias_fn (str | Path | Iterable[str | Path] | None, optional): Path(s) to the
             bias file(s). If provided, DCB biases will be applied to the TEC
             calculation. Defaults to None.
-        rx_bias (Literal["external", "msd", "fallback-msd"], optional): Method for
-            receiver bias correction. Possible values are,
+        rx_bias (Literal["external", "msd", "fallback-msd"] | None, optional): Method
+            for receiver bias correction. Default is "fallback-msd". Possible values
+            are,
             - "external": Use biases only from the provided bias file(s).
             - "msd": Use the Minimum Standard Deviation (MSD) method to estimate.
             - "fallback-msd": Use biases from the provided bias file(s) if available.
               Otherwise, apply the MSD method.
-        constellations (str | None, optional): Constellations to consider. If None, all
-            supported constellations are used. Defaults to None.
+            - None: Do not apply receiver bias correction.
         min_elevation (float, optional): Minimum satellite elevation angle in degrees
             for including observations. Defaults to DEFAULT_MIN_ELEVATION (40.0).
 
     Returns:
         pl.LazyFrame: A LazyFrame containing the calculated TEC values.
     """
-    if constellations is not None:
-        constellations = constellations.upper()
-        for con in constellations:
-            if con not in SUPPORTED_CONSTELLATIONS:
-                raise NotImplementedError(
-                    f"Constellation '{con}' is not supported for TEC calculation. "
-                    f"Supported constellations are: {SUPPORTED_CONSTELLATIONS}"
-                )
-    else:
-        constellations = "".join(SUPPORTED_CONSTELLATIONS.keys())
+    # Filter by minimum elevation angle and drop D-code and S-code observations
+    lf = (
+        df.lazy()
+        .filter(pl.col("elevation") >= min_elevation)
+        .drop(cs.matches(r"^[D,S]\d[A-Z]$"))
+    )
 
-    header, lf = read_rinex_obs(obs_fn, nav_fn, constellations)
+    if sampling_interval is None:
+        sampling_interval = int(
+            lf.select(
+                pl.col("time")
+                .diff()
+                .min()
+                .over("station", "prn")
+                .mean()
+                .dt.total_seconds()
+            )
+            .collect()
+            .item()
+        )
 
     # Parameters based on sampling interval (1s or 30s)
-    if header.sampling_interval == 1:
+    if sampling_interval <= 5:
         arc_interval = pl.duration(minutes=1)
         slip_tec_threshold = 1  # TECU
         slip_correction_window = 20
@@ -275,9 +284,6 @@ def calc_tec(
         arc_interval = pl.duration(minutes=5)
         slip_tec_threshold = 5  # TECU
         slip_correction_window = 5
-
-    # Filter by minimum elevation angle and drop D-code observations
-    lf = lf.filter(pl.col("elevation") >= min_elevation).drop(cs.matches(r"^D\d[A-Z]$"))
 
     if bias_fn is not None:
         from .bias import read_bias
@@ -298,6 +304,10 @@ def calc_tec(
     f2 = pl.col("C2_freq")
     coeff = f1**2 * f2**2 / (f1**2 - f2**2) / 40.3e16
     tecu_per_ns = 1e-9 * c * coeff
+
+    mf, ipp_lat, ipp_lon = _single_layer_model(
+        pl.col("azimuth"), pl.col("elevation"), pl.col("rx_lat"), pl.col("rx_lon")
+    )
 
     lf = (
         lf.drop_nulls()
@@ -354,11 +364,6 @@ def calc_tec(
         .drop("raw_offset", "weight", "offset", "arc_id")
     )
 
-    rx_lat, rx_lon, _ = header.rx_geodetic
-    mf, ipp_lat, ipp_lon = _single_layer_model(
-        pl.col("azimuth"), pl.col("elevation"), pl.lit(rx_lat), pl.lit(rx_lon)
-    )
-
     if bias_fn is not None:
         lf = (
             lf.with_columns(
@@ -396,3 +401,67 @@ def calc_tec(
     )
 
     return lf
+
+
+def calc_tec(
+    obs_fn: str | Path | Iterable[str | Path],
+    nav_fn: str | Path | Iterable[str | Path],
+    bias_fn: str | Path | Iterable[str | Path] | None = None,
+    rx_bias: Literal["external", "msd", "fallback-msd"] | None = "fallback-msd",
+    constellations: str | None = None,
+    min_elevation: float = DEFAULT_MIN_ELEVATION,
+    *,
+    station: str | None = None,
+) -> pl.LazyFrame:
+    """
+    Calculate the Total Electron Content (TEC) from RINEX observation and navigation
+        files.
+
+    Args:
+        obs_fn (str | Path | Iterable[str | Path]): Path(s) to the RINEX observation
+            file(s). These files must be from the same station, otherwise the output
+            DataFrame will be incorrect.
+        nav_fn (str | Path | Iterable[str | Path]): Path(s) to the RINEX navigation
+            file(s).
+        bias_fn (str | Path | Iterable[str | Path] | None, optional): Path(s) to the
+            bias file(s). If provided, DCB biases will be applied to the TEC
+            calculation. Defaults to None.
+        rx_bias (Literal["external", "msd", "fallback-msd"] | None, optional): Method
+            for receiver bias correction. Default is "fallback-msd". Possible values
+            are,
+            - "external": Use biases only from the provided bias file(s).
+            - "msd": Use the Minimum Standard Deviation (MSD) method to estimate.
+            - "fallback-msd": Use biases from the provided bias file(s) if available.
+              Otherwise, apply the MSD method.
+            - None: Do not apply receiver bias correction.
+        constellations (str | None, optional): Constellations to consider. If None, all
+            supported constellations are used. Defaults to None.
+        min_elevation (float, optional): Minimum satellite elevation angle in degrees
+            for including observations. Defaults to DEFAULT_MIN_ELEVATION (40.0).
+        station (str | None, optional): Custom station name to assign to the data. If
+            None, the station name from the RINEX header is used. Defaults to None.
+
+    Returns:
+        pl.LazyFrame: A LazyFrame containing the calculated TEC values.
+    """
+    if constellations is not None:
+        constellations = constellations.upper()
+        for con in constellations:
+            if con not in SUPPORTED_CONSTELLATIONS:
+                raise NotImplementedError(
+                    f"Constellation '{con}' is not supported for TEC calculation. "
+                    f"Supported constellations are: {SUPPORTED_CONSTELLATIONS}"
+                )
+    else:
+        constellations = "".join(SUPPORTED_CONSTELLATIONS.keys())
+
+    header, lf = read_rinex_obs(obs_fn, nav_fn, constellations, station=station)
+
+    lf = lf.with_columns(
+        pl.lit(header.rx_geodetic[0]).alias("rx_lat"),
+        pl.lit(header.rx_geodetic[1]).alias("rx_lon"),
+    )
+
+    return calc_tec_from_df(
+        lf, header.sampling_interval, bias_fn, rx_bias, min_elevation
+    )

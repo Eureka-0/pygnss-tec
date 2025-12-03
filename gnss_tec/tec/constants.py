@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+import polars as pl
+
 c = 299792458.0
 """Speed of light in m/s"""
 
@@ -42,3 +46,30 @@ DEFAULT_IPP_HEIGHT = 400e3
 
 DEFAULT_MIN_ELEVATION = 40.0
 """Default minimum satellite elevation angle in degrees."""
+
+
+@dataclass(frozen=True)
+class SamplingConfig:
+    arc_interval: pl.Expr
+    """Minimum time interval for arc segmentation (pl.duration)."""
+
+    slip_tec_threshold: float
+    """TECU threshold to detect cycle slips."""
+
+    slip_correction_window: int
+    """Window size for slip correction in number of samples (correct to window mean)."""
+
+
+def get_sampling_config(sampling_interval: int) -> SamplingConfig:
+    if sampling_interval <= 5:
+        return SamplingConfig(
+            arc_interval=pl.duration(minutes=1),
+            slip_tec_threshold=1.0,
+            slip_correction_window=20,
+        )
+    else:
+        return SamplingConfig(
+            arc_interval=pl.duration(minutes=5),
+            slip_tec_threshold=5.0,
+            slip_correction_window=10,
+        )

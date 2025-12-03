@@ -20,6 +20,7 @@ from .constants import (
     SUPPORTED_CONSTELLATIONS,
     Re,
     c,
+    get_sampling_config,
 )
 
 
@@ -304,15 +305,7 @@ def calc_tec_from_df(
             .item()
         )
 
-    # Parameters based on sampling interval (1s or 30s)
-    if sampling_interval <= 5:
-        arc_interval = pl.duration(minutes=1)
-        slip_tec_threshold = 1  # TECU
-        slip_correction_window = 20
-    else:
-        arc_interval = pl.duration(minutes=5)
-        slip_tec_threshold = 5  # TECU
-        slip_correction_window = 5
+    sampling_config = get_sampling_config(sampling_interval)
 
     if bias_fn is not None:
         bias_lf = read_bias(bias_fn).with_columns(
@@ -349,7 +342,7 @@ def calc_tec_from_df(
         .with_columns(
             pl.col("time")
             .diff()
-            .ge(arc_interval)
+            .ge(sampling_config.arc_interval)
             .fill_null(False)
             .cum_sum()
             .over("station", "prn")
@@ -358,11 +351,17 @@ def calc_tec_from_df(
         # Detect and correct cycle slips to previous windowed mean in each arc
         .with_columns(
             pl.when(
-                pl.col("stec_p").diff().abs().ge(slip_tec_threshold).fill_null(False)
+                pl.col("stec_p")
+                .diff()
+                .abs()
+                .ge(sampling_config.slip_tec_threshold)
+                .fill_null(False)
             )
             .then(
                 pl.col("stec_p")
-                - pl.col("stec_p").rolling_mean(slip_correction_window).shift(1)
+                - pl.col("stec_p")
+                .rolling_mean(sampling_config.slip_correction_window)
+                .shift(1)
             )
             .fill_null(0)
             .cum_sum()

@@ -4,7 +4,6 @@ import re
 from pathlib import Path
 from typing import Iterable
 
-import numpy as np
 import polars as pl
 import polars.selectors as cs
 
@@ -13,15 +12,14 @@ from .bias import read_bias
 from .constants import (
     C1_CODES,
     C2_CODES,
-    DEFAULT_IPP_HEIGHT,
     DEFAULT_MIN_ELEVATION,
     DEFAULT_MIN_SNR,
     SIGNAL_FREQ,
     SUPPORTED_CONSTELLATIONS,
-    Re,
     c,
     get_sampling_config,
 )
+from .mapping_func import single_layer_model
 
 
 def _coalesce_observations(
@@ -216,42 +214,6 @@ def _map_frequencies(lf: pl.LazyFrame) -> pl.LazyFrame:
     )
 
 
-def _single_layer_model(
-    azimuth: pl.Expr, elevation: pl.Expr, rx_lat_deg: pl.Expr, rx_lon_deg: pl.Expr
-) -> tuple[pl.Expr, pl.Expr, pl.Expr]:
-    """
-    Calculate the mapping function and Ionospheric Pierce Point (IPP) latitude and
-    longitude using the Single Layer Model (SLM).
-
-    Args:
-        azimuth (pl.Expr): Satellite azimuth angle in degrees.
-        elevation (pl.Expr): Satellite elevation angle in degrees.
-        rx_lat_deg (pl.Expr): Receiver latitude in degrees.
-        rx_lon_deg (pl.Expr): Receiver longitude in degrees.
-
-    Returns:
-        tuple[pl.Expr, pl.Expr, pl.Expr]: A tuple containing:
-            - Mapping function (pl.Expr)
-            - IPP latitude in degrees (pl.Expr)
-            - IPP longitude in degrees (pl.Expr)
-    """
-    az = azimuth.radians()
-    el = elevation.radians()
-    rx_lat = rx_lat_deg.radians()
-    rx_lon = rx_lon_deg.radians()
-
-    # mapping function
-    sin_beta = Re * el.cos() / (Re + DEFAULT_IPP_HEIGHT)
-    mf = sin_beta.arcsin().cos().pow(-1)
-
-    # IPP latitude and longitude, in radians
-    psi = np.pi / 2 - el - sin_beta.arcsin()
-    ipp_lat = (rx_lat.sin() * psi.cos() + rx_lat.cos() * psi.sin() * az.cos()).arcsin()
-    ipp_lon = rx_lon + (psi.sin() * az.sin() / ipp_lat.cos()).arcsin()
-
-    return mf, ipp_lat.degrees(), ipp_lon.degrees()
-
-
 def calc_tec_from_df(
     df: pl.DataFrame | pl.LazyFrame,
     sampling_interval: int | None = None,
@@ -408,7 +370,7 @@ def calc_tec_from_df(
             .alias("stec")
         )
 
-    mf, ipp_lat, ipp_lon = _single_layer_model(
+    mf, ipp_lat, ipp_lon = single_layer_model(
         pl.col("azimuth"), pl.col("elevation"), pl.col("rx_lat"), pl.col("rx_lon")
     )
 

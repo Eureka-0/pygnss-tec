@@ -44,7 +44,7 @@ C2_CODES = {
 DEFAULT_IPP_HEIGHT = 400e3
 """Default ionospheric pierce point height in meters."""
 
-DEFAULT_MIN_ELEVATION = 40.0
+DEFAULT_MIN_ELEVATION = 30.0
 """Default minimum satellite elevation angle in degrees."""
 
 DEFAULT_MIN_SNR = 30.0

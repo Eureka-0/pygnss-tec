@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Iterable
 
 import numpy as np
 import polars as pl
@@ -24,10 +24,8 @@ from .constants import (
 )
 
 
-def _resolve_observations_and_bias(
-    lf: pl.LazyFrame,
-    bias_lf: pl.LazyFrame | None,
-    rx_bias: Literal["external", "msd", "fallback-msd"] | None,
+def _coalesce_observations(
+    lf: pl.LazyFrame, bias_lf: pl.LazyFrame | None, rx_bias: bool
 ) -> pl.LazyFrame:
     # ---- 1. Unpivot the LazyFrame to long format for easier processing. ----
     long_lf = (
@@ -64,8 +62,8 @@ def _resolve_observations_and_bias(
         .drop_nulls("band")
     )
 
-    # ---- 3. Pivot back to wide format with resolved C bands as columns. ----
-    resolved_lf = (
+    # ---- 3. Pivot back to wide format with coalesced C bands as columns. ----
+    coalesced_lf = (
         long_lf.group_by("time", "station", "constellation", "prn")
         .agg(
             pl.col("code").filter(pl.col("band") == "C1").alias("C1_code"),
@@ -76,55 +74,37 @@ def _resolve_observations_and_bias(
     )
 
     # ---- 4. Join bias data (if provided). ----
-    def join_rx_bias(
-        lf: pl.LazyFrame, bias_lf: pl.LazyFrame, how: Literal["inner", "left"] = "inner"
-    ) -> pl.LazyFrame:
-        bias_station = bias_lf.drop_nulls("station")
-        return lf.join(
-            bias_station.select(
-                "station",
-                constellation="prn",
-                C1_code="obs1",
-                C2_code="obs2",
-                bias_station="estimated_value",
-            ),
-            on=["station", "constellation", "C1_code", "C2_code"],
-            how=how,
-        )
-
     all_cols = ["time", "station", "prn", "C1_code", "C2_code"]
     if bias_lf is not None:
-        all_cols += ["bias"]
+        all_cols += ["tx_bias", "rx_bias"]
 
-        bias_prn = bias_lf.filter(pl.col("station").is_null())
-        resolved_lf = resolved_lf.join(
-            bias_prn.select(
-                "prn", C1_code="obs1", C2_code="obs2", bias_prn="estimated_value"
+        coalesced_lf = coalesced_lf.join(
+            bias_lf.filter(pl.col("station").is_null()).select(
+                "prn",
+                C1_code="obs1",
+                C2_code="obs2",
+                tx_bias=-pl.col("estimated_value"),
             ),
             on=["prn", "C1_code", "C2_code"],
         )
 
-        if rx_bias == "external":
-            resolved_lf = (
-                join_rx_bias(resolved_lf, bias_lf)
-                .with_columns(
-                    pl.col("bias_prn").add(pl.col("bias_station")).alias("bias")
-                )
-                .drop("bias_prn", "bias_station")
+        if rx_bias:
+            coalesced_lf = coalesced_lf.join(
+                bias_lf.drop_nulls("station").select(
+                    "station",
+                    constellation="prn",
+                    C1_code="obs1",
+                    C2_code="obs2",
+                    rx_bias=-pl.col("estimated_value"),
+                ),
+                on=["station", "constellation", "C1_code", "C2_code"],
+                how="left",
             )
-        elif rx_bias == "msd":
-            raise NotImplementedError(
-                "MSD receiver bias estimation is not implemented yet."
-            )
-        elif rx_bias == "fallback-msd":
-            raise NotImplementedError(
-                "Fallback MSD receiver bias estimation is not implemented yet."
-            )
-        elif rx_bias is None:
-            resolved_lf = resolved_lf.rename({"bias_prn": "bias"})
+        else:
+            coalesced_lf = coalesced_lf.with_columns(pl.lit(None).alias("rx_bias"))
 
     # ---- 5. Keep only the highest priority codes for C1 and C2. ----
-    resolved_lf = resolved_lf.with_columns(
+    coalesced_lf = coalesced_lf.with_columns(
         pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("C1_code"))
         .replace_strict(c1_priority, default=None)
         .alias("C1_priority"),
@@ -138,7 +118,7 @@ def _resolve_observations_and_bias(
         .over("time", "station", "prn", mapping_strategy="explode")
     )
 
-    # ---- 6. Join back the observation values for the resolved codes. ----
+    # ---- 6. Join back the observation values for the coalesced codes. ----
     def build_extract_expr(target_col_name: str, code_col_name: str) -> pl.Expr:
         """
         生成一个表达式：根据 code_col_name 列中存储的列名，去提取对应列的值。
@@ -163,8 +143,8 @@ def _resolve_observations_and_bias(
     def l_code(col: str) -> pl.Expr:
         return pl.concat_str(pl.lit("L"), pl.col(col).str.slice(1, None))
 
-    resolved_lf = (
-        resolved_lf.join(
+    coalesced_lf = (
+        coalesced_lf.join(
             lf.select(
                 "time",
                 "station",
@@ -189,7 +169,7 @@ def _resolve_observations_and_bias(
         .drop(cs.matches(r"^[A-Z]\d[A-Z]$"), cs.matches(r"^[L][12]_code$"))
     )
 
-    return resolved_lf
+    return coalesced_lf
 
 
 def _map_frequencies(lf: pl.LazyFrame) -> pl.LazyFrame:
@@ -212,7 +192,7 @@ def _map_frequencies(lf: pl.LazyFrame) -> pl.LazyFrame:
 
     return lf.with_columns(
         map_freq("C1_code").alias("C1_freq"), map_freq("C2_code").alias("C2_freq")
-    ).drop("C1_code", "C2_code")
+    )
 
 
 def _single_layer_model(
@@ -255,8 +235,9 @@ def calc_tec_from_df(
     df: pl.DataFrame | pl.LazyFrame,
     sampling_interval: int | None = None,
     bias_fn: str | Path | Iterable[str | Path] | None = None,
-    rx_bias: Literal["external", "msd", "fallback-msd"] | None = "fallback-msd",
     min_elevation: float = DEFAULT_MIN_ELEVATION,
+    *,
+    rx_bias: bool = True,
 ) -> pl.LazyFrame:
     """
     Calculate the Total Electron Content (TEC) from a Polars DataFrame or LazyFrame
@@ -270,16 +251,10 @@ def calc_tec_from_df(
         bias_fn (str | Path | Iterable[str | Path] | None, optional): Path(s) to the
             bias file(s). If provided, DCB biases will be applied to the TEC
             calculation. Defaults to None.
-        rx_bias (Literal["external", "msd", "fallback-msd"] | None, optional): Method
-            for receiver bias correction. Default is "fallback-msd". Possible values
-            are,
-            - "external": Use biases only from the provided bias file(s).
-            - "msd": Use the Minimum Standard Deviation (MSD) method to estimate.
-            - "fallback-msd": Use biases from the provided bias file(s) if available.
-              Otherwise, apply the MSD method.
-            - None: Do not apply receiver bias correction.
         min_elevation (float, optional): Minimum satellite elevation angle in degrees
             for including observations. Defaults to DEFAULT_MIN_ELEVATION (40.0).
+        rx_bias (bool, optional): Whether to apply receiver bias correction. Default is
+            True.
 
     Returns:
         pl.LazyFrame: A LazyFrame containing the calculated TEC values.
@@ -317,7 +292,7 @@ def calc_tec_from_df(
     lf = lf.with_columns(
         pl.col("station").cast(pl.Categorical), pl.col("prn").cast(pl.Categorical)
     )
-    lf = _resolve_observations_and_bias(lf, bias_lf, rx_bias)
+    lf = _coalesce_observations(lf, bias_lf, rx_bias)
     lf = _map_frequencies(lf)
 
     f1 = pl.col("C1_freq")
@@ -325,12 +300,8 @@ def calc_tec_from_df(
     coeff = f1**2 * f2**2 / (f1**2 - f2**2) / 40.3e16
     tecu_per_ns = 1e-9 * c * coeff
 
-    mf, ipp_lat, ipp_lon = _single_layer_model(
-        pl.col("azimuth"), pl.col("elevation"), pl.col("rx_lat"), pl.col("rx_lon")
-    )
-
     lf = (
-        lf.drop_nulls()
+        lf.drop_nulls(["C1", "C2", "L1", "L2", "C1_freq", "C2_freq"])
         .with_columns(
             # sTEC from pseudorange, in TECU
             (pl.col("C2") - pl.col("C1")).mul(coeff).alias("stec_g"),
@@ -392,12 +363,19 @@ def calc_tec_from_df(
 
     if bias_fn is not None:
         lf = lf.with_columns(
-            # total DCB biases, in TECU
-            pl.col("bias").mul(tecu_per_ns)
+            # Convert biases from ns to TECU
+            pl.col("tx_bias").mul(tecu_per_ns),
+            pl.col("rx_bias").mul(tecu_per_ns),
         ).with_columns(
             # sTEC corrected for DCB biases, in TECU
-            (pl.col("stec") + pl.col("bias")).alias("stec")
+            pl.col("stec")
+            .sub(pl.col("tx_bias") + pl.col("rx_bias").fill_null(0))
+            .alias("stec")
         )
+
+    mf, ipp_lat, ipp_lon = _single_layer_model(
+        pl.col("azimuth"), pl.col("elevation"), pl.col("rx_lat"), pl.col("rx_lon")
+    )
 
     lf = (
         lf.with_columns(
@@ -420,11 +398,11 @@ def calc_tec(
     obs_fn: str | Path | Iterable[str | Path],
     nav_fn: str | Path | Iterable[str | Path],
     bias_fn: str | Path | Iterable[str | Path] | None = None,
-    rx_bias: Literal["external", "msd", "fallback-msd"] | None = "fallback-msd",
     constellations: str | None = None,
     min_elevation: float = DEFAULT_MIN_ELEVATION,
     *,
     station: str | None = None,
+    rx_bias: bool = True,
 ) -> pl.LazyFrame:
     """
     Calculate the Total Electron Content (TEC) from RINEX observation and navigation
@@ -439,20 +417,14 @@ def calc_tec(
         bias_fn (str | Path | Iterable[str | Path] | None, optional): Path(s) to the
             bias file(s). If provided, DCB biases will be applied to the TEC
             calculation. Defaults to None.
-        rx_bias (Literal["external", "msd", "fallback-msd"] | None, optional): Method
-            for receiver bias correction. Default is "fallback-msd". Possible values
-            are,
-            - "external": Use biases only from the provided bias file(s).
-            - "msd": Use the Minimum Standard Deviation (MSD) method to estimate.
-            - "fallback-msd": Use biases from the provided bias file(s) if available.
-              Otherwise, apply the MSD method.
-            - None: Do not apply receiver bias correction.
         constellations (str | None, optional): Constellations to consider. If None, all
             supported constellations are used. Defaults to None.
         min_elevation (float, optional): Minimum satellite elevation angle in degrees
             for including observations. Defaults to DEFAULT_MIN_ELEVATION (40.0).
         station (str | None, optional): Custom station name to assign to the data. If
             None, the station name from the RINEX header is used. Defaults to None.
+        rx_bias (bool, optional): Whether to apply receiver bias correction. Default is
+            True.
 
     Returns:
         pl.LazyFrame: A LazyFrame containing the calculated TEC values.
@@ -476,5 +448,5 @@ def calc_tec(
     )
 
     return calc_tec_from_df(
-        lf, header.sampling_interval, bias_fn, rx_bias, min_elevation
+        lf, header.sampling_interval, bias_fn, min_elevation, rx_bias=rx_bias
     )

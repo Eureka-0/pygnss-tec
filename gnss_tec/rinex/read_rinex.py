@@ -75,6 +75,7 @@ def read_rinex_obs(
     constellations: str | None = None,
     codes: Iterable[str] | None = None,
     *,
+    utc: bool = True,
     station: str | None = None,
     pivot: bool = True,
 ) -> tuple[RinexObsHeader, pl.LazyFrame]:
@@ -93,6 +94,9 @@ def read_rinex_obs(
         codes (Iterable[str] | None, optional): Specific observation codes to extract
             (e.g., ['C1C', 'L1C']). If None, all available observation types are
             included. Defaults to None.
+        utc (bool, optional): Whether to convert time to UTC. If False, time will be in
+            GPS time. In this case, ensure that leap seconds **are consistent** across
+            all input files. Defaults to True.
         station (str | None, optional): Station name to assign to the DataFrame. If
             None, the station name from the RINEX header is used. Defaults to None.
         pivot (bool, optional): Whether to pivot the DataFrame so that each observation
@@ -184,5 +188,12 @@ def read_rinex_obs(
         .select(ordered_cols)
         .sort(["time", "station", "prn"])
     )
+
+    if not utc:
+        lf = lf.with_columns(
+            pl.col("time")
+            .add(pl.duration(seconds=header.leap_seconds))
+            .dt.replace_time_zone(None)
+        )
 
     return header, lf

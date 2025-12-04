@@ -74,7 +74,9 @@ def _read_bias_file(fn: str | Path) -> pl.LazyFrame:
 
 
 def read_bias(fn: str | Path | Iterable[str | Path]) -> pl.LazyFrame:
-    """Read GNSS DCB bias files into a Polars DataFrame.
+    """
+    Read GNSS DCB bias files into a Polars DataFrame.
+
     Args:
         fn (str | Path | Iterable[str | Path]): Path(s) to the bias file(s).
 

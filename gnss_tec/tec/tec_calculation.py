@@ -8,8 +8,7 @@ import numpy as np
 import polars as pl
 import polars.selectors as cs
 
-from gnss_tec import read_rinex_obs
-
+from ..rinex import get_leap_seconds, read_rinex_obs
 from .bias import read_bias
 from .constants import (
     C1_CODES,
@@ -79,14 +78,17 @@ def _coalesce_observations(
     if bias_lf is not None:
         all_cols += ["tx_bias", "rx_bias"]
 
-        coalesced_lf = coalesced_lf.join(
+        coalesced_lf = coalesced_lf.with_columns(
+            pl.col("time").dt.date().alias("date")
+        ).join(
             bias_lf.filter(pl.col("station").is_null()).select(
                 "prn",
                 C1_code="obs1",
                 C2_code="obs2",
+                date=pl.col("bias_start").dt.date(),
                 tx_bias=-pl.col("estimated_value"),
             ),
-            on=["prn", "C1_code", "C2_code"],
+            on=["prn", "C1_code", "C2_code", "date"],
         )
 
         if rx_bias:
@@ -96,10 +98,10 @@ def _coalesce_observations(
                     constellation="prn",
                     C1_code="obs1",
                     C2_code="obs2",
+                    date=pl.col("bias_start").dt.date(),
                     rx_bias=-pl.col("estimated_value"),
                 ),
-                on=["station", "constellation", "C1_code", "C2_code"],
-                how="left",
+                on=["station", "constellation", "C1_code", "C2_code", "date"],
             )
         else:
             coalesced_lf = coalesced_lf.with_columns(pl.lit(None).alias("rx_bias"))
@@ -122,11 +124,14 @@ def _coalesce_observations(
     # ---- 6. Join back the observation values for the coalesced codes. ----
     def build_extract_expr(target_col_name: str, code_col_name: str) -> pl.Expr:
         """
-        生成一个表达式：根据 code_col_name 列中存储的列名，去提取对应列的值。
-        例如：如果 C1_Code 列的值是 "C1C"，则提取 "C1C" 列的值。
+        Generate an expression that extracts the value from the column named in
+        `code_col_name`.
+
+        For example, if the value in the C1_Code column is "C1C", extract the value
+        from the "C1C" column.
         """
         expr = None
-        # 遍历所有可能的列名，构建 when-then 链
+        # Iterate over all possible column names to build a when-then chain
         available_cols = filter(
             lambda x: re.match(r"^[CL]\d[A-Z]$", x), lf.collect_schema().names()
         )
@@ -216,7 +221,7 @@ def _single_layer_model(
 ) -> tuple[pl.Expr, pl.Expr, pl.Expr]:
     """
     Calculate the mapping function and Ionospheric Pierce Point (IPP) latitude and
-        longitude using the Single Layer Model (SLM).
+    longitude using the Single Layer Model (SLM).
 
     Args:
         azimuth (pl.Expr): Satellite azimuth angle in degrees.
@@ -258,7 +263,7 @@ def calc_tec_from_df(
 ) -> pl.LazyFrame:
     """
     Calculate the Total Electron Content (TEC) from a Polars DataFrame or LazyFrame
-        containing GNSS observations.
+    containing GNSS observations.
 
     Args:
         df (pl.DataFrame | pl.LazyFrame): Input DataFrame or LazyFrame containing GNSS
@@ -269,7 +274,7 @@ def calc_tec_from_df(
             bias file(s). If provided, DCB biases will be applied to the TEC
             calculation. Defaults to None.
         min_elevation (float, optional): Minimum satellite elevation angle in degrees
-            for including observations. Defaults to DEFAULT_MIN_ELEVATION (40.0).
+            for including observations. Defaults to DEFAULT_MIN_ELEVATION (30.0).
         min_snr (float, optional): Minimum signal-to-noise ratio in dB-Hz for
             including observations. Defaults to DEFAULT_MIN_SNR (30.0).
         rx_bias (bool, optional): Whether to apply receiver bias correction. Default is
@@ -301,6 +306,14 @@ def calc_tec_from_df(
 
     sampling_config = get_sampling_config(sampling_interval)
 
+    # Determine if the time column is in UTC or GPS time
+    is_utc = lf.head(1).collect().get_column("time")[0].tzinfo.key == "UTC"
+    leap_seconds = (
+        get_leap_seconds(pl.col("time").dt.replace_time_zone(None))
+        if is_utc
+        else pl.duration(seconds=0)
+    )
+
     if bias_fn is not None:
         bias_lf = read_bias(bias_fn).with_columns(
             pl.col("prn").cast(pl.Categorical), pl.col("station").cast(pl.Categorical)
@@ -309,7 +322,10 @@ def calc_tec_from_df(
         bias_lf = None
 
     lf = lf.with_columns(
-        pl.col("station").cast(pl.Categorical), pl.col("prn").cast(pl.Categorical)
+        pl.col("station").cast(pl.Categorical),
+        pl.col("prn").cast(pl.Categorical),
+        # Adjust time to GPS time for correctly joining with bias data
+        pl.col("time").add(leap_seconds).dt.replace_time_zone(None),
     )
     lf = _coalesce_observations(lf, min_snr, bias_lf, rx_bias)
     lf = _map_frequencies(lf)
@@ -404,16 +420,77 @@ def calc_tec_from_df(
             ipp_lat.alias("ipp_lat"),
             # IPP Longitude in degrees
             ipp_lon.alias("ipp_lon"),
+            # Cast back to string for output
+            pl.col("station").cast(pl.String),
+            pl.col("prn").cast(pl.String),
+            # Adjust time back to UTC
+            pl.col("time").sub(leap_seconds).dt.replace_time_zone("UTC"),
         )
         .drop("C1_freq", "C2_freq", "azimuth", "rx_lat", "rx_lon")
-        .with_columns(pl.col("station").cast(pl.String), pl.col("prn").cast(pl.String))
         .sort("time", "station", "prn")
     )
 
     return lf
 
 
-def calc_tec(
+def calc_tec_from_parquet(
+    parquet_fn: str | Path,
+    bias_fn: str | Path | Iterable[str | Path] | None = None,
+    min_elevation: float = DEFAULT_MIN_ELEVATION,
+    min_snr: float = DEFAULT_MIN_SNR,
+    *,
+    rx_bias: bool = True,
+) -> pl.LazyFrame:
+    """
+    Calculate the Total Electron Content (TEC) from a Parquet file containing GNSS
+    observations. Make sure the Parquet file contains necessary metadata such as
+    sampling interval and receiver geodetic coordinates.
+
+    Args:
+        parquet_fn (str | Path): Path to the Parquet file.
+        bias_fn (str | Path | Iterable[str | Path] | None, optional): Path(s) to the
+            bias file(s). If provided, DCB biases will be applied to the TEC
+            calculation. Defaults to None.
+        min_elevation (float, optional): Minimum satellite elevation angle in degrees
+            for including observations. Defaults to DEFAULT_MIN_ELEVATION (30.0).
+        min_snr (float, optional): Minimum signal-to-noise ratio in dB-Hz for
+            including observations. Defaults to DEFAULT_MIN_SNR (30.0).
+        rx_bias (bool, optional): Whether to apply receiver bias correction. Default is
+            True.
+
+    Returns:
+        pl.LazyFrame: A LazyFrame containing the calculated TEC values.
+    """
+    lf = pl.scan_parquet(parquet_fn)
+    metadata = pl.read_parquet_metadata(parquet_fn)
+
+    sampling_interval = metadata.get("sampling_interval", None)
+    if sampling_interval is not None:
+        sampling_interval = int(sampling_interval)
+
+    rx_lat = metadata.get("rx_geodetic_lat", None)
+    if rx_lat is not None:
+        rx_lat = float(rx_lat)
+    else:
+        raise ValueError("Receiver latitude not found in parquet metadata.")
+
+    rx_lon = metadata.get("rx_geodetic_lon", None)
+    if rx_lon is not None:
+        rx_lon = float(rx_lon)
+    else:
+        raise ValueError("Receiver longitude not found in parquet metadata.")
+
+    lf = lf.with_columns(
+        pl.lit(rx_lat, dtype=pl.Float32).alias("rx_lat"),
+        pl.lit(rx_lon, dtype=pl.Float32).alias("rx_lon"),
+    )
+
+    return calc_tec_from_df(
+        lf, sampling_interval, bias_fn, min_elevation, min_snr, rx_bias=rx_bias
+    )
+
+
+def calc_tec_from_rinex(
     obs_fn: str | Path | Iterable[str | Path],
     nav_fn: str | Path | Iterable[str | Path],
     bias_fn: str | Path | Iterable[str | Path] | None = None,
@@ -426,7 +503,7 @@ def calc_tec(
 ) -> pl.LazyFrame:
     """
     Calculate the Total Electron Content (TEC) from RINEX observation and navigation
-        files.
+    files.
 
     Args:
         obs_fn (str | Path | Iterable[str | Path]): Path(s) to the RINEX observation
@@ -440,7 +517,7 @@ def calc_tec(
         constellations (str | None, optional): Constellations to consider. If None, all
             supported constellations are used. Defaults to None.
         min_elevation (float, optional): Minimum satellite elevation angle in degrees
-            for including observations. Defaults to DEFAULT_MIN_ELEVATION (40.0).
+            for including observations. Defaults to DEFAULT_MIN_ELEVATION (30.0).
         min_snr (float, optional): Minimum signal-to-noise ratio in dB-Hz for
             including observations. Defaults to DEFAULT_MIN_SNR (30.0).
         station (str | None, optional): Custom station name to assign to the data. If

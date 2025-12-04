@@ -16,6 +16,7 @@ from .constants import (
     C2_CODES,
     DEFAULT_IPP_HEIGHT,
     DEFAULT_MIN_ELEVATION,
+    DEFAULT_MIN_SNR,
     SIGNAL_FREQ,
     SUPPORTED_CONSTELLATIONS,
     Re,
@@ -25,7 +26,7 @@ from .constants import (
 
 
 def _coalesce_observations(
-    lf: pl.LazyFrame, bias_lf: pl.LazyFrame | None, rx_bias: bool
+    lf: pl.LazyFrame, min_snr: float, bias_lf: pl.LazyFrame | None, rx_bias: bool
 ) -> pl.LazyFrame:
     # ---- 1. Unpivot the LazyFrame to long format for easier processing. ----
     long_lf = (
@@ -158,15 +159,30 @@ def _coalesce_observations(
             on=["time", "station", "prn"],
         )
         .with_columns(
-            l_code("C1_code").alias("L1_code"), l_code("C2_code").alias("L2_code")
+            pl.col("C1_code").str.slice(1, None).alias("C1_band"),
+            pl.col("C2_code").str.slice(1, None).alias("C2_band"),
         )
+        .with_columns(
+            pl.concat_str(pl.lit("L"), pl.col("C1_band")).alias("L1_code"),
+            pl.concat_str(pl.lit("L"), pl.col("C2_band")).alias("L2_code"),
+            pl.concat_str(pl.lit("S"), pl.col("C1_band")).alias("S1_code"),
+            pl.concat_str(pl.lit("S"), pl.col("C2_band")).alias("S2_code"),
+        )
+        .with_columns(
+            build_extract_expr("S1", "S1_code"), build_extract_expr("S2", "S2_code")
+        )
+        .filter(
+            (pl.col("S1") >= min_snr) | (pl.col("S1").null_count() / pl.len() > 0.5),
+            (pl.col("S2") >= min_snr) | (pl.col("S2").null_count() / pl.len() > 0.5),
+        )
+        .drop("C1_band", "C2_band", "S1", "S2")
         .with_columns(
             build_extract_expr("C1", "C1_code"),
             build_extract_expr("C2", "C2_code"),
             build_extract_expr("L1", "L1_code"),
             build_extract_expr("L2", "L2_code"),
         )
-        .drop(cs.matches(r"^[A-Z]\d[A-Z]$"), cs.matches(r"^[L][12]_code$"))
+        .drop(cs.matches(r"^[A-Z]\d[A-Z]$"), cs.matches(r"^[LS][12]_code$"))
     )
 
     return coalesced_lf
@@ -236,6 +252,7 @@ def calc_tec_from_df(
     sampling_interval: int | None = None,
     bias_fn: str | Path | Iterable[str | Path] | None = None,
     min_elevation: float = DEFAULT_MIN_ELEVATION,
+    min_snr: float = DEFAULT_MIN_SNR,
     *,
     rx_bias: bool = True,
 ) -> pl.LazyFrame:
@@ -253,6 +270,8 @@ def calc_tec_from_df(
             calculation. Defaults to None.
         min_elevation (float, optional): Minimum satellite elevation angle in degrees
             for including observations. Defaults to DEFAULT_MIN_ELEVATION (40.0).
+        min_snr (float, optional): Minimum signal-to-noise ratio in dB-Hz for
+            including observations. Defaults to DEFAULT_MIN_SNR (30.0).
         rx_bias (bool, optional): Whether to apply receiver bias correction. Default is
             True.
 
@@ -292,7 +311,7 @@ def calc_tec_from_df(
     lf = lf.with_columns(
         pl.col("station").cast(pl.Categorical), pl.col("prn").cast(pl.Categorical)
     )
-    lf = _coalesce_observations(lf, bias_lf, rx_bias)
+    lf = _coalesce_observations(lf, min_snr, bias_lf, rx_bias)
     lf = _map_frequencies(lf)
 
     f1 = pl.col("C1_freq")
@@ -400,6 +419,7 @@ def calc_tec(
     bias_fn: str | Path | Iterable[str | Path] | None = None,
     constellations: str | None = None,
     min_elevation: float = DEFAULT_MIN_ELEVATION,
+    min_snr: float = DEFAULT_MIN_SNR,
     *,
     station: str | None = None,
     rx_bias: bool = True,
@@ -421,6 +441,8 @@ def calc_tec(
             supported constellations are used. Defaults to None.
         min_elevation (float, optional): Minimum satellite elevation angle in degrees
             for including observations. Defaults to DEFAULT_MIN_ELEVATION (40.0).
+        min_snr (float, optional): Minimum signal-to-noise ratio in dB-Hz for
+            including observations. Defaults to DEFAULT_MIN_SNR (30.0).
         station (str | None, optional): Custom station name to assign to the data. If
             None, the station name from the RINEX header is used. Defaults to None.
         rx_bias (bool, optional): Whether to apply receiver bias correction. Default is
@@ -448,5 +470,5 @@ def calc_tec(
     )
 
     return calc_tec_from_df(
-        lf, header.sampling_interval, bias_fn, min_elevation, rx_bias=rx_bias
+        lf, header.sampling_interval, bias_fn, min_elevation, min_snr, rx_bias=rx_bias
     )

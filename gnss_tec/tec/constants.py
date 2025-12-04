@@ -47,6 +47,9 @@ DEFAULT_IPP_HEIGHT = 400e3
 DEFAULT_MIN_ELEVATION = 40.0
 """Default minimum satellite elevation angle in degrees."""
 
+DEFAULT_MIN_SNR = 30.0
+"""Default minimum signal-to-noise ratio in dB-Hz."""
+
 
 @dataclass(frozen=True)
 class SamplingConfig:

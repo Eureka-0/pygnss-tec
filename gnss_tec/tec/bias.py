@@ -61,6 +61,7 @@ def _read_bias_file(fn: str | Path) -> pl.LazyFrame:
                 pl.col("full_str")
                 .str.slice(colspec[0], colspec[1] - colspec[0])
                 .str.strip_chars()
+                .replace("", None)
                 .cast(schema.get(col, pl.String))
                 .alias(col)
                 for colspec, col in zip(colspecs, cols)

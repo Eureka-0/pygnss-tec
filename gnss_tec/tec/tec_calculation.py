@@ -356,6 +356,8 @@ def calc_tec_from_df(
             # sTEC corrected for DCB biases, in TECU
             pl.col("stec").sub(pl.col("tx_bias") + pl.col("rx_bias").fill_null(0))
         )
+        if not config.retain_intermediate:
+            lf = lf.drop("tx_bias", "rx_bias")
 
     mf, ipp_lat, ipp_lon = single_layer_model(
         pl.col("azimuth"),
@@ -384,16 +386,7 @@ def calc_tec_from_df(
         lf = lf.with_columns(mf.alias("mf"))
 
     if not config.retain_intermediate:
-        lf = lf.drop(
-            "C1_code",
-            "C2_code",
-            "azimuth",
-            "elevation",
-            "stec_g",
-            "stec_p",
-            "tx_bias",
-            "rx_bias",
-        )
+        lf = lf.drop("C1_code", "C2_code", "azimuth", "elevation", "stec_g", "stec_p")
 
     return lf
 

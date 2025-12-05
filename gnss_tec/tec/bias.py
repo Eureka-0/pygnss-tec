@@ -4,7 +4,7 @@ import gzip
 import io
 import re
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Literal
 
 import pandas as pd
 import polars as pl
@@ -50,6 +50,13 @@ def _read_bias_file(fn: str | Path) -> pl.LazyFrame:
         pl.from_pandas(pd.read_fwf(buf, colspecs=colspecs, names=cols, header=None))
         .lazy()
         .drop("bias", "svn")
+        .with_columns(
+            pl.col("prn").cast(pl.Categorical),
+            pl.col("station").cast(pl.Categorical),
+            pl.col("obs1").cast(pl.Categorical),
+            pl.col("obs2").cast(pl.Categorical),
+            pl.col("unit").cast(pl.Categorical),
+        )
     )
 
     for col in ["bias_start", "bias_end"]:
@@ -95,3 +102,11 @@ def read_bias(fn: str | Path | Iterable[str | Path]) -> pl.LazyFrame:
             raise FileNotFoundError(f"Bias file not found: {f}")
 
     return pl.concat([_read_bias_file(f) for f in fn_list])
+
+
+def correct_rx_bias(
+    df: pl.DataFrame | pl.LazyFrame, method: Literal["mstd"]
+) -> pl.LazyFrame: ...
+
+
+def _mstd_rx_bias(df: pl.DataFrame | pl.LazyFrame) -> pl.LazyFrame: ...

@@ -214,7 +214,8 @@ def read_rinex_obs(
         df.lazy()
         .with_columns(
             pl.col("time").cast(pl.Datetime("ms", "UTC")),
-            pl.lit(header.marker_name).alias("station"),
+            pl.lit(header.marker_name).cast(pl.Categorical).alias("station"),
+            pl.col("prn").cast(pl.Categorical),
         )
         .fill_nan(None)
         .select(ordered_cols)

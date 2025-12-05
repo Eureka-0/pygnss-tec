@@ -62,6 +62,9 @@ class TECConfig:
     )
     """Observation codes priority list for C2 measurements."""
 
+    retain_intermediate: bool = False
+    """Whether to retain intermediate calculation columns in the output DataFrame."""
+
     @property
     def ipp_height_m(self) -> float:
         """Ionospheric pierce point height in meters."""

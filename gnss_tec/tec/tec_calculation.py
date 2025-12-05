@@ -24,19 +24,20 @@ def _coalesce_observations(
         )
         .drop_nulls("value")
         .drop("value")
+        .with_columns(pl.col("code").cast(pl.Categorical))
     )
 
     # ---- 2. Map observation codes to bands (C1, C2). ----
-    code_band: dict[str, str] = {}
+    code_band: dict[str, int] = {}
     c1_priority: dict[str, int] = {}
     c2_priority: dict[str, int] = {}
     for const, codes in config.c1_codes.items():
         for i, code in enumerate(codes):
-            code_band[f"{const}_{code}"] = "C1"
+            code_band[f"{const}_{code}"] = 1  # C1 band
             c1_priority[f"{const}_{code}"] = i
     for const, codes in config.c2_codes.items():
         for i, code in enumerate(codes):
-            code_band[f"{const}_{code}"] = "C2"
+            code_band[f"{const}_{code}"] = 2  # C2 band
             c2_priority[f"{const}_{code}"] = i
 
     long_lf = (
@@ -45,7 +46,7 @@ def _coalesce_observations(
         )
         .with_columns(
             pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("code"))
-            .replace_strict(code_band, default=None)
+            .replace_strict(code_band, default=None, return_dtype=pl.UInt8)
             .alias("band")
         )
         .drop_nulls("band")
@@ -55,8 +56,8 @@ def _coalesce_observations(
     coalesced_lf = (
         long_lf.group_by("time", "station", "constellation", "prn")
         .agg(
-            pl.col("code").filter(pl.col("band") == "C1").alias("C1_code"),
-            pl.col("code").filter(pl.col("band") == "C2").alias("C2_code"),
+            pl.col("code").filter(pl.col("band") == 1).alias("C1_code"),
+            pl.col("code").filter(pl.col("band") == 2).alias("C2_code"),
         )
         .explode("C1_code")
         .explode("C2_code")
@@ -97,10 +98,10 @@ def _coalesce_observations(
     # ---- 5. Keep only the highest priority codes for C1 and C2. ----
     coalesced_lf = coalesced_lf.with_columns(
         pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("C1_code"))
-        .replace_strict(c1_priority, default=None)
+        .replace_strict(c1_priority, default=None, return_dtype=pl.UInt8)
         .alias("C1_priority"),
         pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("C2_code"))
-        .replace_strict(c2_priority, default=None)
+        .replace_strict(c2_priority, default=None, return_dtype=pl.UInt8)
         .alias("C2_priority"),
     ).select(
         pl.col(all_cols)
@@ -150,8 +151,8 @@ def _coalesce_observations(
             on=["time", "station", "prn"],
         )
         .with_columns(
-            pl.col("C1_code").str.slice(1, None).alias("C1_band"),
-            pl.col("C2_code").str.slice(1, None).alias("C2_band"),
+            pl.col("C1_code").cat.slice(1, None).cast(pl.Categorical).alias("C1_band"),
+            pl.col("C2_code").cat.slice(1, None).cast(pl.Categorical).alias("C2_band"),
         )
         .with_columns(
             pl.concat_str(pl.lit("L"), pl.col("C1_band")).alias("L1_code"),
@@ -199,7 +200,7 @@ def _map_frequencies(lf: pl.LazyFrame) -> pl.LazyFrame:
 
     def map_freq(col: str) -> pl.Expr:
         return pl.concat_str(
-            pl.col("prn").cat.slice(0, 1), pl.lit("_"), pl.col(col).str.slice(1, 1)
+            pl.col("prn").cat.slice(0, 1), pl.lit("_"), pl.col(col).cat.slice(1, 1)
         ).replace_strict(code_freq_map, default=None)
 
     return lf.with_columns(
@@ -240,7 +241,7 @@ def calc_tec_from_df(
         # Filter by minimum elevation angle and constellations
         .filter(
             pl.col("elevation") >= config.min_elevation,
-            pl.col("prn").str.slice(0, 1).is_in(list(config.constellations)),
+            pl.col("prn").cat.slice(0, 1).is_in(list(config.constellations)),
         )
         # drop D-code and S-code observations
         .drop(cs.matches(r"^[D,S]\d[A-Z]$"))
@@ -270,19 +271,11 @@ def calc_tec_from_df(
         else pl.duration(seconds=0)
     )
 
-    if bias_fn is not None:
-        bias_lf = read_bias(bias_fn).with_columns(
-            pl.col("prn").cast(pl.Categorical), pl.col("station").cast(pl.Categorical)
-        )
-    else:
-        bias_lf = None
-
     lf = lf.with_columns(
-        pl.col("station").cast(pl.Categorical),
-        pl.col("prn").cast(pl.Categorical),
         # Adjust time to GPS time for correctly joining with bias data
-        pl.col("time").add(leap_seconds).dt.replace_time_zone(None),
+        pl.col("time").add(leap_seconds).dt.replace_time_zone(None)
     )
+    bias_lf = None if bias_fn is None else read_bias(bias_fn)
     lf = _coalesce_observations(lf, bias_lf, rx_bias, config)
     lf = _map_frequencies(lf)
 
@@ -307,6 +300,7 @@ def calc_tec_from_df(
             .ge(sampling_config.arc_interval)
             .fill_null(False)
             .cum_sum()
+            .cast(pl.UInt16)
             .over("station", "prn")
             .alias("arc_id")
         )
@@ -359,9 +353,7 @@ def calc_tec_from_df(
             pl.col("rx_bias").mul(tecu_per_ns),
         ).with_columns(
             # sTEC corrected for DCB biases, in TECU
-            pl.col("stec")
-            .sub(pl.col("tx_bias") + pl.col("rx_bias").fill_null(0))
-            .alias("stec")
+            pl.col("stec").sub(pl.col("tx_bias") + pl.col("rx_bias").fill_null(0))
         )
 
     mf, ipp_lat, ipp_lon = single_layer_model(
@@ -380,15 +372,20 @@ def calc_tec_from_df(
             ipp_lat.alias("ipp_lat"),
             # IPP Longitude in degrees
             ipp_lon.alias("ipp_lon"),
-            # Cast back to string for output
-            pl.col("station").cast(pl.String),
-            pl.col("prn").cast(pl.String),
             # Adjust time back to UTC
             pl.col("time").sub(leap_seconds).dt.replace_time_zone("UTC"),
         )
         .drop("C1_freq", "C2_freq", "azimuth", "rx_lat", "rx_lon")
         .sort("time", "station", "prn")
     )
+
+    if not rx_bias:
+        lf = lf.with_columns(mf.alias("mf"))
+
+    if not config.retain_intermediate:
+        lf = lf.drop(
+            "C1_code", "C2_code", "elevation", "stec_g", "stec_p", "tx_bias", "rx_bias"
+        )
 
     return lf
 

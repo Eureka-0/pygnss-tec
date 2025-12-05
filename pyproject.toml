@@ -16,10 +16,12 @@ classifiers = [
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=2.0.0",
-    "pandas>=2.0.0",
+    "patsy>=1.0.2",
     "polars>=1.30.0",
+    "polars-ols>=0.3.5",
     "pyarrow>=21.0.0",
     "pymap3d>=3.2.0",
+    "scipy>=1.15.3",
 ]
 
 [tool.pytest]

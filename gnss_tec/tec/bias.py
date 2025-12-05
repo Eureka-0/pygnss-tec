@@ -6,7 +6,6 @@ import re
 from pathlib import Path
 from typing import Iterable, Literal
 
-import pandas as pd
 import polars as pl
 
 
@@ -46,22 +45,33 @@ def _read_bias_file(fn: str | Path) -> pl.LazyFrame:
 
     colspecs = [(m.start(), m.end()) for m in re.finditer(r"\S+", header_str)]
     cols = [col.strip("*_").lower() for col in header_str.split()]
-    df = (
-        pl.from_pandas(pd.read_fwf(buf, colspecs=colspecs, names=cols, header=None))
-        .lazy()
-        .drop("bias", "svn")
+    schema = {
+        "prn": pl.Categorical,
+        "station": pl.Categorical,
+        "obs1": pl.Categorical,
+        "obs2": pl.Categorical,
+        "unit": pl.Categorical,
+        "estimated_value": pl.Float64,
+        "std_dev": pl.Float64,
+    }
+    lf = (
+        pl.scan_csv(buf, has_header=False, new_columns=["full_str"])
         .with_columns(
-            pl.col("prn").cast(pl.Categorical),
-            pl.col("station").cast(pl.Categorical),
-            pl.col("obs1").cast(pl.Categorical),
-            pl.col("obs2").cast(pl.Categorical),
-            pl.col("unit").cast(pl.Categorical),
+            [
+                pl.col("full_str")
+                .str.slice(colspec[0], colspec[1] - colspec[0])
+                .str.strip_chars()
+                .cast(schema.get(col, pl.String))
+                .alias(col)
+                for colspec, col in zip(colspecs, cols)
+            ]
         )
+        .drop("full_str", "bias", "svn")
     )
 
     for col in ["bias_start", "bias_end"]:
-        df = (
-            df.with_columns(pl.col(col).str.split(":").alias("parts"))
+        lf = (
+            lf.with_columns(pl.col(col).str.split(":").alias("parts"))
             .with_columns(
                 pl.col("parts").list.get(0).alias("year"),
                 pl.col("parts").list.get(1).alias("doy"),
@@ -77,7 +87,7 @@ def _read_bias_file(fn: str | Path) -> pl.LazyFrame:
             .drop("parts", "year", "doy", "sod")
         )
 
-    return df
+    return lf
 
 
 def read_bias(fn: str | Path | Iterable[str | Path]) -> pl.LazyFrame:

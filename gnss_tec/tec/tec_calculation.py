@@ -9,21 +9,12 @@ import polars.selectors as cs
 
 from ..rinex import get_leap_seconds, read_rinex_obs
 from .bias import read_bias
-from .constants import (
-    C1_CODES,
-    C2_CODES,
-    DEFAULT_MIN_ELEVATION,
-    DEFAULT_MIN_SNR,
-    SIGNAL_FREQ,
-    SUPPORTED_CONSTELLATIONS,
-    c,
-    get_sampling_config,
-)
+from .constants import SIGNAL_FREQ, TECConfig, c, get_sampling_config
 from .mapping_func import single_layer_model
 
 
 def _coalesce_observations(
-    lf: pl.LazyFrame, min_snr: float, bias_lf: pl.LazyFrame | None, rx_bias: bool
+    lf: pl.LazyFrame, bias_lf: pl.LazyFrame | None, rx_bias: bool, config: TECConfig
 ) -> pl.LazyFrame:
     # ---- 1. Unpivot the LazyFrame to long format for easier processing. ----
     long_lf = (
@@ -39,11 +30,11 @@ def _coalesce_observations(
     code_band: dict[str, str] = {}
     c1_priority: dict[str, int] = {}
     c2_priority: dict[str, int] = {}
-    for const, codes in C1_CODES.items():
+    for const, codes in config.c1_codes.items():
         for i, code in enumerate(codes):
             code_band[f"{const}_{code}"] = "C1"
             c1_priority[f"{const}_{code}"] = i
-    for const, codes in C2_CODES.items():
+    for const, codes in config.c2_codes.items():
         for i, code in enumerate(codes):
             code_band[f"{const}_{code}"] = "C2"
             c2_priority[f"{const}_{code}"] = i
@@ -177,8 +168,8 @@ def _coalesce_observations(
             (pl.col("S2").null_count() / pl.len()).cast(pl.Float32).alias("S2_null_pc"),
         )
         .filter(
-            (pl.col("S1") >= min_snr) | (pl.col("S1_null_pc") > 0.5),
-            (pl.col("S2") >= min_snr) | (pl.col("S2_null_pc") > 0.5),
+            (pl.col("S1") >= config.min_snr) | (pl.col("S1_null_pc") > 0.5),
+            (pl.col("S2") >= config.min_snr) | (pl.col("S2_null_pc") > 0.5),
         )
         .drop("C1_band", "C2_band", "S1", "S2", "S1_null_pc", "S2_null_pc")
         .with_columns(
@@ -220,8 +211,7 @@ def calc_tec_from_df(
     df: pl.DataFrame | pl.LazyFrame,
     sampling_interval: int | None = None,
     bias_fn: str | Path | Iterable[str | Path] | None = None,
-    min_elevation: float = DEFAULT_MIN_ELEVATION,
-    min_snr: float = DEFAULT_MIN_SNR,
+    config: TECConfig = TECConfig(),
     *,
     rx_bias: bool = True,
 ) -> pl.LazyFrame:
@@ -237,20 +227,22 @@ def calc_tec_from_df(
         bias_fn (str | Path | Iterable[str | Path] | None, optional): Path(s) to the
             bias file(s). If provided, DCB biases will be applied to the TEC
             calculation. Defaults to None.
-        min_elevation (float, optional): Minimum satellite elevation angle in degrees
-            for including observations. Defaults to DEFAULT_MIN_ELEVATION (30.0).
-        min_snr (float, optional): Minimum signal-to-noise ratio in dB-Hz for
-            including observations. Defaults to DEFAULT_MIN_SNR (30.0).
+        config (TECConfig, optional): Configuration parameters for TEC calculation.
+            Defaults to TECConfig().
         rx_bias (bool, optional): Whether to apply receiver bias correction. Default is
             True.
 
     Returns:
         pl.LazyFrame: A LazyFrame containing the calculated TEC values.
     """
-    # Filter by minimum elevation angle and drop D-code and S-code observations
     lf = (
         df.lazy()
-        .filter(pl.col("elevation") >= min_elevation)
+        # Filter by minimum elevation angle and constellations
+        .filter(
+            pl.col("elevation") >= config.min_elevation,
+            pl.col("prn").str.slice(0, 1).is_in(list(config.constellations)),
+        )
+        # drop D-code and S-code observations
         .drop(cs.matches(r"^[D,S]\d[A-Z]$"))
     )
 
@@ -291,7 +283,7 @@ def calc_tec_from_df(
         # Adjust time to GPS time for correctly joining with bias data
         pl.col("time").add(leap_seconds).dt.replace_time_zone(None),
     )
-    lf = _coalesce_observations(lf, min_snr, bias_lf, rx_bias)
+    lf = _coalesce_observations(lf, bias_lf, rx_bias, config)
     lf = _map_frequencies(lf)
 
     f1 = pl.col("C1_freq")
@@ -373,7 +365,11 @@ def calc_tec_from_df(
         )
 
     mf, ipp_lat, ipp_lon = single_layer_model(
-        pl.col("azimuth"), pl.col("elevation"), pl.col("rx_lat"), pl.col("rx_lon")
+        pl.col("azimuth"),
+        pl.col("elevation"),
+        pl.col("rx_lat"),
+        pl.col("rx_lon"),
+        config,
     )
 
     lf = (
@@ -400,8 +396,7 @@ def calc_tec_from_df(
 def calc_tec_from_parquet(
     parquet_fn: str | Path,
     bias_fn: str | Path | Iterable[str | Path] | None = None,
-    min_elevation: float = DEFAULT_MIN_ELEVATION,
-    min_snr: float = DEFAULT_MIN_SNR,
+    config: TECConfig = TECConfig(),
     *,
     rx_bias: bool = True,
 ) -> pl.LazyFrame:
@@ -415,10 +410,8 @@ def calc_tec_from_parquet(
         bias_fn (str | Path | Iterable[str | Path] | None, optional): Path(s) to the
             bias file(s). If provided, DCB biases will be applied to the TEC
             calculation. Defaults to None.
-        min_elevation (float, optional): Minimum satellite elevation angle in degrees
-            for including observations. Defaults to DEFAULT_MIN_ELEVATION (30.0).
-        min_snr (float, optional): Minimum signal-to-noise ratio in dB-Hz for
-            including observations. Defaults to DEFAULT_MIN_SNR (30.0).
+        config (TECConfig, optional): Configuration parameters for TEC calculation.
+            Defaults to TECConfig().
         rx_bias (bool, optional): Whether to apply receiver bias correction. Default is
             True.
 
@@ -449,18 +442,14 @@ def calc_tec_from_parquet(
         pl.lit(rx_lon, dtype=pl.Float32).alias("rx_lon"),
     )
 
-    return calc_tec_from_df(
-        lf, sampling_interval, bias_fn, min_elevation, min_snr, rx_bias=rx_bias
-    )
+    return calc_tec_from_df(lf, sampling_interval, bias_fn, config, rx_bias=rx_bias)
 
 
 def calc_tec_from_rinex(
     obs_fn: str | Path | Iterable[str | Path],
     nav_fn: str | Path | Iterable[str | Path],
     bias_fn: str | Path | Iterable[str | Path] | None = None,
-    constellations: str | None = None,
-    min_elevation: float = DEFAULT_MIN_ELEVATION,
-    min_snr: float = DEFAULT_MIN_SNR,
+    config: TECConfig = TECConfig(),
     *,
     station: str | None = None,
     rx_bias: bool = True,
@@ -478,12 +467,8 @@ def calc_tec_from_rinex(
         bias_fn (str | Path | Iterable[str | Path] | None, optional): Path(s) to the
             bias file(s). If provided, DCB biases will be applied to the TEC
             calculation. Defaults to None.
-        constellations (str | None, optional): Constellations to consider. If None, all
-            supported constellations are used. Defaults to None.
-        min_elevation (float, optional): Minimum satellite elevation angle in degrees
-            for including observations. Defaults to DEFAULT_MIN_ELEVATION (30.0).
-        min_snr (float, optional): Minimum signal-to-noise ratio in dB-Hz for
-            including observations. Defaults to DEFAULT_MIN_SNR (30.0).
+        config (TECConfig, optional): Configuration parameters for TEC calculation.
+            Defaults to TECConfig().
         station (str | None, optional): Custom station name to assign to the data. If
             None, the station name from the RINEX header is used. Defaults to None.
         rx_bias (bool, optional): Whether to apply receiver bias correction. Default is
@@ -492,18 +477,7 @@ def calc_tec_from_rinex(
     Returns:
         pl.LazyFrame: A LazyFrame containing the calculated TEC values.
     """
-    if constellations is not None:
-        constellations = constellations.upper()
-        for con in constellations:
-            if con not in SUPPORTED_CONSTELLATIONS:
-                raise NotImplementedError(
-                    f"Constellation '{con}' is not supported for TEC calculation. "
-                    f"Supported constellations are: {SUPPORTED_CONSTELLATIONS}"
-                )
-    else:
-        constellations = "".join(SUPPORTED_CONSTELLATIONS.keys())
-
-    header, lf = read_rinex_obs(obs_fn, nav_fn, constellations, station=station)
+    header, lf = read_rinex_obs(obs_fn, nav_fn, config.constellations, station=station)
 
     lf = lf.with_columns(
         pl.lit(header.rx_geodetic[0], dtype=pl.Float32).alias("rx_lat"),
@@ -511,5 +485,5 @@ def calc_tec_from_rinex(
     )
 
     return calc_tec_from_df(
-        lf, header.sampling_interval, bias_fn, min_elevation, min_snr, rx_bias=rx_bias
+        lf, header.sampling_interval, bias_fn, config, rx_bias=rx_bias
     )

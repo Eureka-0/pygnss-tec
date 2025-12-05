@@ -1,11 +1,15 @@
 import numpy as np
 import polars as pl
 
-from .constants import DEFAULT_IPP_HEIGHT, Re
+from .constants import Re, TECConfig
 
 
 def single_layer_model(
-    azimuth: pl.Expr, elevation: pl.Expr, rx_lat_deg: pl.Expr, rx_lon_deg: pl.Expr
+    azimuth: pl.Expr,
+    elevation: pl.Expr,
+    rx_lat_deg: pl.Expr,
+    rx_lon_deg: pl.Expr,
+    config: TECConfig,
 ) -> tuple[pl.Expr, pl.Expr, pl.Expr]:
     """
     Calculate the mapping function and Ionospheric Pierce Point (IPP) latitude and
@@ -29,7 +33,7 @@ def single_layer_model(
     rx_lon = rx_lon_deg.radians()
 
     # mapping function
-    sin_beta = Re * el.cos() / (Re + DEFAULT_IPP_HEIGHT)
+    sin_beta = Re * el.cos() / (Re + config.ipp_height_m)
     mf = sin_beta.arcsin().cos().pow(-1)
 
     # IPP latitude and longitude, in radians

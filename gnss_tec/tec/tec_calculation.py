@@ -230,8 +230,9 @@ def calc_tec_from_df(
             calculation. Defaults to None.
         config (TECConfig, optional): Configuration parameters for TEC calculation.
             Defaults to TECConfig().
-        rx_bias (bool, optional): Whether to apply receiver bias correction. Default is
-            True.
+        rx_bias (bool, optional): Whether to apply receiver bias correction. If False,
+            mapping function column will be retained for possible subsequent receiver
+            bias correction. Default is True.
 
     Returns:
         pl.LazyFrame: A LazyFrame containing the calculated TEC values.
@@ -375,7 +376,7 @@ def calc_tec_from_df(
             # Adjust time back to UTC
             pl.col("time").sub(leap_seconds).dt.replace_time_zone("UTC"),
         )
-        .drop("C1_freq", "C2_freq", "azimuth", "rx_lat", "rx_lon")
+        .drop("C1_freq", "C2_freq")
         .sort("time", "station", "prn")
     )
 
@@ -384,7 +385,14 @@ def calc_tec_from_df(
 
     if not config.retain_intermediate:
         lf = lf.drop(
-            "C1_code", "C2_code", "elevation", "stec_g", "stec_p", "tx_bias", "rx_bias"
+            "C1_code",
+            "C2_code",
+            "azimuth",
+            "elevation",
+            "stec_g",
+            "stec_p",
+            "tx_bias",
+            "rx_bias",
         )
 
     return lf
@@ -409,8 +417,9 @@ def calc_tec_from_parquet(
             calculation. Defaults to None.
         config (TECConfig, optional): Configuration parameters for TEC calculation.
             Defaults to TECConfig().
-        rx_bias (bool, optional): Whether to apply receiver bias correction. Default is
-            True.
+        rx_bias (bool, optional): Whether to apply receiver bias correction. If False,
+            mapping function column will be retained for possible subsequent receiver
+            bias correction. Default is True.
 
     Returns:
         pl.LazyFrame: A LazyFrame containing the calculated TEC values.
@@ -468,8 +477,9 @@ def calc_tec_from_rinex(
             Defaults to TECConfig().
         station (str | None, optional): Custom station name to assign to the data. If
             None, the station name from the RINEX header is used. Defaults to None.
-        rx_bias (bool, optional): Whether to apply receiver bias correction. Default is
-            True.
+        rx_bias (bool, optional): Whether to apply receiver bias correction. If False,
+            mapping function column will be retained for possible subsequent receiver
+            bias correction. Default is True.
 
     Returns:
         pl.LazyFrame: A LazyFrame containing the calculated TEC values.

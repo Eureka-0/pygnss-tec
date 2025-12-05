@@ -76,29 +76,28 @@ def _coalesce_observations(
     if bias_lf is not None:
         all_cols += ["tx_bias", "rx_bias"]
 
+        tx_bias_lf = bias_lf.filter(pl.col("station").is_null()).select(
+            "prn",
+            C1_code="obs1",
+            C2_code="obs2",
+            date=pl.col("bias_start").dt.date(),
+            tx_bias=-pl.col("estimated_value"),
+        )
         coalesced_lf = coalesced_lf.with_columns(
             pl.col("time").dt.date().alias("date")
-        ).join(
-            bias_lf.filter(pl.col("station").is_null()).select(
-                "prn",
+        ).join(tx_bias_lf, on=["prn", "C1_code", "C2_code", "date"])
+
+        if rx_bias:
+            rx_bias_lf = bias_lf.drop_nulls("station").select(
+                "station",
+                constellation="prn",
                 C1_code="obs1",
                 C2_code="obs2",
                 date=pl.col("bias_start").dt.date(),
-                tx_bias=-pl.col("estimated_value"),
-            ),
-            on=["prn", "C1_code", "C2_code", "date"],
-        )
-
-        if rx_bias:
+                rx_bias=-pl.col("estimated_value"),
+            )
             coalesced_lf = coalesced_lf.join(
-                bias_lf.drop_nulls("station").select(
-                    "station",
-                    constellation="prn",
-                    C1_code="obs1",
-                    C2_code="obs2",
-                    date=pl.col("bias_start").dt.date(),
-                    rx_bias=-pl.col("estimated_value"),
-                ),
+                rx_bias_lf,
                 on=["station", "constellation", "C1_code", "C2_code", "date"],
             )
         else:
@@ -120,7 +119,7 @@ def _coalesce_observations(
     )
 
     # ---- 6. Join back the observation values for the coalesced codes. ----
-    def build_extract_expr(target_col_name: str, code_col_name: str) -> pl.Expr:
+    def build_extract_expr(code_col_name: str) -> pl.Expr:
         """
         Generate an expression that extracts the value from the column named in
         `code_col_name`.
@@ -131,7 +130,8 @@ def _coalesce_observations(
         expr = None
         # Iterate over all possible column names to build a when-then chain
         available_cols = filter(
-            lambda x: re.match(r"^[CL]\d[A-Z]$", x), lf.collect_schema().names()
+            lambda x: re.match(rf"^[{code_col_name[0]}]\d[A-Z]$", x),
+            lf.collect_schema().names(),
         )
         for col in available_cols:
             cond = pl.col(code_col_name) == col
@@ -141,11 +141,8 @@ def _coalesce_observations(
             else:
                 expr = expr.when(cond).then(val)
         if expr is None:
-            return pl.lit(None).alias(target_col_name)
-        return expr.otherwise(None).alias(target_col_name)
-
-    def l_code(col: str) -> pl.Expr:
-        return pl.concat_str(pl.lit("L"), pl.col(col).str.slice(1, None))
+            return pl.lit(None)
+        return expr.otherwise(None)
 
     coalesced_lf = (
         coalesced_lf.join(
@@ -172,18 +169,23 @@ def _coalesce_observations(
             pl.concat_str(pl.lit("S"), pl.col("C2_band")).alias("S2_code"),
         )
         .with_columns(
-            build_extract_expr("S1", "S1_code"), build_extract_expr("S2", "S2_code")
+            build_extract_expr("S1_code").alias("S1"),
+            build_extract_expr("S2_code").alias("S2"),
+        )
+        .with_columns(
+            (pl.col("S1").null_count() / pl.len()).cast(pl.Float32).alias("S1_null_pc"),
+            (pl.col("S2").null_count() / pl.len()).cast(pl.Float32).alias("S2_null_pc"),
         )
         .filter(
-            (pl.col("S1") >= min_snr) | (pl.col("S1").null_count() / pl.len() > 0.5),
-            (pl.col("S2") >= min_snr) | (pl.col("S2").null_count() / pl.len() > 0.5),
+            (pl.col("S1") >= min_snr) | (pl.col("S1_null_pc") > 0.5),
+            (pl.col("S2") >= min_snr) | (pl.col("S2_null_pc") > 0.5),
         )
-        .drop("C1_band", "C2_band", "S1", "S2")
+        .drop("C1_band", "C2_band", "S1", "S2", "S1_null_pc", "S2_null_pc")
         .with_columns(
-            build_extract_expr("C1", "C1_code"),
-            build_extract_expr("C2", "C2_code"),
-            build_extract_expr("L1", "L1_code"),
-            build_extract_expr("L2", "L2_code"),
+            build_extract_expr("C1_code").alias("C1"),
+            build_extract_expr("C2_code").alias("C2"),
+            build_extract_expr("L1_code").alias("L1"),
+            build_extract_expr("L2_code").alias("L2"),
         )
         .drop(cs.matches(r"^[A-Z]\d[A-Z]$"), cs.matches(r"^[LS][12]_code$"))
     )

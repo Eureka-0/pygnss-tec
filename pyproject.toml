@@ -45,6 +45,7 @@ dev = [
     "altair>=6.0.0",
     "ipykernel>=6.31.0",
     "matplotlib>=3.9.4",
+    "pandas>=2.3.3",
     "pytest>=8.4.2",
     "ruff>=0.14.6",
 ]

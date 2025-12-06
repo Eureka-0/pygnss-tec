@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 
 import polars as pl
@@ -29,8 +30,18 @@ SIGNAL_FREQ = {
 }
 """Signal frequencies for supported constellations and signals in Hz."""
 
+DEFAULT_C1_CODES = {
+    "C": ["C2I", "C2D", "C2X", "C1I", "C1D", "C1X", "C2W", "C1C"],
+    "G": ["C1W", "C1C", "C1X"],
+}
 
-@dataclass(frozen=True)
+DEFAULT_C2_CODES = {
+    "C": ["C6I", "C6D", "C6X", "C7I", "C7D", "C7X", "C5I", "C5D", "C5X"],
+    "G": ["C2W", "C2C", "C2X", "C5W", "C5C", "C5X"],
+}
+
+
+@dataclass(frozen=True, kw_only=True)
 class TECConfig:
     constellations: str = field(
         default_factory=lambda: "".join(SUPPORTED_CONSTELLATIONS.keys())
@@ -46,20 +57,10 @@ class TECConfig:
     min_snr: float = 30.0
     """Minimum signal-to-noise ratio in dB-Hz."""
 
-    c1_codes: dict[str, list[str]] = field(
-        default_factory=lambda: {
-            "C": ["C2I", "C2D", "C2X", "C1I", "C1D", "C1X", "C2W", "C1C"],
-            "G": ["C1W", "C1C", "C1X"],
-        }
-    )
+    c1_codes: Mapping[str, list[str]] = field(default_factory=lambda: {})
     """Observation codes priority list for C1 measurements."""
 
-    c2_codes: dict[str, list[str]] = field(
-        default_factory=lambda: {
-            "C": ["C6I", "C6D", "C6X", "C7I", "C7D", "C7X", "C5I", "C5D", "C5X"],
-            "G": ["C2W", "C2C", "C2X", "C5W", "C5C", "C5X"],
-        }
-    )
+    c2_codes: Mapping[str, list[str]] = field(default_factory=lambda: {})
     """Observation codes priority list for C2 measurements."""
 
     retain_intermediate: bool = False
@@ -70,7 +71,41 @@ class TECConfig:
         """Ionospheric pierce point height in meters."""
         return self.ipp_height * 1e3
 
+    @property
+    def code2band(self) -> Mapping[str, int]:
+        code_band: dict[str, int] = {}
+        for const, code, _ in self.iter_c1_codes():
+            code_band[f"{const}_{code}"] = 1  # C1 band
+        for const, code, _ in self.iter_c2_codes():
+            code_band[f"{const}_{code}"] = 2  # C2 band
+        return code_band
+
+    @property
+    def c1_priority(self) -> Mapping[str, int]:
+        priority: dict[str, int] = {}
+        for const, code, i in self.iter_c1_codes():
+            priority[f"{const}_{code}"] = i
+        return priority
+
+    @property
+    def c2_priority(self) -> Mapping[str, int]:
+        priority: dict[str, int] = {}
+        for const, code, i in self.iter_c2_codes():
+            priority[f"{const}_{code}"] = i
+        return priority
+
+    def iter_c1_codes(self) -> Iterator[tuple[str, str, int]]:
+        for constellation, codes in self.c1_codes.items():
+            for i, code in enumerate(codes):
+                yield constellation, code, i
+
+    def iter_c2_codes(self) -> Iterator[tuple[str, str, int]]:
+        for constellation, codes in self.c2_codes.items():
+            for i, code in enumerate(codes):
+                yield constellation, code, i
+
     def __post_init__(self):
+        # Validate constellations
         allowed = set(SUPPORTED_CONSTELLATIONS.keys())
         actual = set(self.constellations)
 
@@ -78,9 +113,33 @@ class TECConfig:
         if invalid:
             raise ValueError(
                 f"Invalid constellations {self.constellations!r}; "
-                f"allowed letters are subset of {''.join(sorted(allowed))}, "
-                f"but got invalid: {''.join(sorted(invalid))}"
+                f"allowed letters are subset of {''.join(sorted(allowed))!r}."
             )
+
+        # Set default codes if not provided
+        if not self.c1_codes:
+            object.__setattr__(self, "c1_codes", DEFAULT_C1_CODES)
+        else:
+            user_codes = dict(self.c1_codes)
+            unknown = user_codes.keys() - allowed
+            if unknown:
+                raise ValueError(
+                    f"Invalid constellations in c1_codes: {unknown}. "
+                    f"Allowed constellations are {allowed}."
+                )
+            object.__setattr__(self, "c1_codes", DEFAULT_C1_CODES | user_codes)
+
+        if not self.c2_codes:
+            object.__setattr__(self, "c2_codes", DEFAULT_C2_CODES)
+        else:
+            user_codes = dict(self.c2_codes)
+            unknown = user_codes.keys() - allowed
+            if unknown:
+                raise ValueError(
+                    f"Invalid constellations in c2_codes: {unknown}. "
+                    f"Allowed constellations are {allowed}."
+                )
+            object.__setattr__(self, "c2_codes", DEFAULT_C2_CODES | user_codes)
 
 
 @dataclass(frozen=True)

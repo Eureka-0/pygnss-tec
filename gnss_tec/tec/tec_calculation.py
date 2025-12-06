@@ -28,25 +28,13 @@ def _coalesce_observations(
     )
 
     # ---- 2. Map observation codes to bands (C1, C2). ----
-    code_band: dict[str, int] = {}
-    c1_priority: dict[str, int] = {}
-    c2_priority: dict[str, int] = {}
-    for const, codes in config.c1_codes.items():
-        for i, code in enumerate(codes):
-            code_band[f"{const}_{code}"] = 1  # C1 band
-            c1_priority[f"{const}_{code}"] = i
-    for const, codes in config.c2_codes.items():
-        for i, code in enumerate(codes):
-            code_band[f"{const}_{code}"] = 2  # C2 band
-            c2_priority[f"{const}_{code}"] = i
-
     long_lf = (
         long_lf.with_columns(
             pl.col("prn").cat.slice(0, 1).cast(pl.Categorical).alias("constellation")
         )
         .with_columns(
             pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("code"))
-            .replace_strict(code_band, default=None, return_dtype=pl.UInt8)
+            .replace_strict(config.code2band, default=None, return_dtype=pl.UInt8)
             .alias("band")
         )
         .drop_nulls("band")
@@ -98,10 +86,10 @@ def _coalesce_observations(
     # ---- 5. Keep only the highest priority codes for C1 and C2. ----
     coalesced_lf = coalesced_lf.with_columns(
         pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("C1_code"))
-        .replace_strict(c1_priority, default=None, return_dtype=pl.UInt8)
+        .replace_strict(config.c1_priority, default=None, return_dtype=pl.UInt8)
         .alias("C1_priority"),
         pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("C2_code"))
-        .replace_strict(c2_priority, default=None, return_dtype=pl.UInt8)
+        .replace_strict(config.c2_priority, default=None, return_dtype=pl.UInt8)
         .alias("C2_priority"),
     ).select(
         pl.col(all_cols)

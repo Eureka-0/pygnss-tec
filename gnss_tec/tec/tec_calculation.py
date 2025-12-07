@@ -17,33 +17,29 @@ from .mapping_func import single_layer_model
 def _coalesce_observations(
     lf: pl.LazyFrame, bias_lf: pl.LazyFrame | None, rx_bias: bool, config: TECConfig
 ) -> pl.LazyFrame:
-    # ---- 1. Unpivot the LazyFrame to long format for easier processing. ----
-    long_lf = (
-        lf.select(pl.col("time", "station", "prn"), cs.matches(r"^C\d[A-Z]$"))
+    # --- 1. Prepare coalesced observation codes for C1 and C2. ---
+    lf = lf.with_columns(pl.col("time").dt.date().alias("date"))
+    codes_lf = (
+        lf.select("date", "station", "prn", cs.matches(r"^C\d[A-Z]$"))
+        .group_by("date", "station", "prn")
+        .agg(pl.all().null_count() / pl.len())
         .unpivot(
-            index=["time", "station", "prn"], variable_name="code", value_name="value"
+            index=["date", "station", "prn"], variable_name="code", value_name="null_pc"
         )
-        .drop_nulls("value")
-        .drop("value")
-        .with_columns(pl.col("code").cast(pl.Categorical))
-    )
-
-    # ---- 2. Map observation codes to bands (C1, C2). ----
-    long_lf = (
-        long_lf.with_columns(
-            pl.col("prn").cat.slice(0, 1).cast(pl.Categorical).alias("constellation")
+        .filter(pl.col("null_pc") <= 0.05)
+        .drop("null_pc")
+        .with_columns(
+            pl.col("prn").cat.slice(0, 1).cast(pl.Categorical).alias("constellation"),
+            pl.col("code").cast(pl.Categorical),
         )
+        .sort(["date", "station", "prn"])
         .with_columns(
             pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("code"))
             .replace_strict(config.code2band, default=None, return_dtype=pl.UInt8)
             .alias("band")
         )
         .drop_nulls("band")
-    )
-
-    # ---- 3. Pivot back to wide format with coalesced C bands as columns. ----
-    coalesced_lf = (
-        long_lf.group_by("time", "station", "constellation", "prn")
+        .group_by("date", "station", "constellation", "prn")
         .agg(
             pl.col("code").filter(pl.col("band") == 1).alias("C1_code"),
             pl.col("code").filter(pl.col("band") == 2).alias("C2_code"),
@@ -52,11 +48,8 @@ def _coalesce_observations(
         .explode("C2_code")
     )
 
-    # ---- 4. Join bias data (if provided). ----
-    all_cols = ["time", "station", "prn", "C1_code", "C2_code"]
+    # ---- 2. Join bias data (if provided). ----
     if bias_lf is not None:
-        all_cols += ["tx_bias", "rx_bias"]
-
         tx_bias_lf = bias_lf.filter(pl.col("station").is_null()).select(
             "prn",
             C1_code="obs1",
@@ -64,9 +57,7 @@ def _coalesce_observations(
             date=pl.col("bias_start").dt.date(),
             tx_bias=-pl.col("estimated_value"),
         )
-        coalesced_lf = coalesced_lf.with_columns(
-            pl.col("time").dt.date().alias("date")
-        ).join(tx_bias_lf, on=["prn", "C1_code", "C2_code", "date"])
+        codes_lf = codes_lf.join(tx_bias_lf, on=["prn", "C1_code", "C2_code", "date"])
 
         if rx_bias:
             rx_bias_lf = bias_lf.drop_nulls("station").select(
@@ -77,29 +68,34 @@ def _coalesce_observations(
                 date=pl.col("bias_start").dt.date(),
                 rx_bias=-pl.col("estimated_value"),
             )
-            coalesced_lf = coalesced_lf.join(
+            codes_lf = codes_lf.join(
                 rx_bias_lf,
                 on=["station", "constellation", "C1_code", "C2_code", "date"],
             )
         else:
-            coalesced_lf = coalesced_lf.with_columns(pl.lit(None).alias("rx_bias"))
+            codes_lf = codes_lf.with_columns(pl.lit(None).alias("rx_bias"))
 
-    # ---- 5. Keep only the highest priority codes for C1 and C2. ----
-    coalesced_lf = coalesced_lf.with_columns(
-        pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("C1_code"))
-        .replace_strict(config.c1_priority, default=None, return_dtype=pl.UInt8)
-        .alias("C1_priority"),
-        pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("C2_code"))
-        .replace_strict(config.c2_priority, default=None, return_dtype=pl.UInt8)
-        .alias("C2_priority"),
-    ).select(
-        pl.col(all_cols)
-        .sort_by(pl.col("C1_priority") * 2 + pl.col("C2_priority"), descending=False)
-        .first()
-        .over("time", "station", "prn", mapping_strategy="explode")
+    # ---- 3. Keep only the highest priority codes for C1 and C2. ----
+    codes_lf = (
+        codes_lf.with_columns(
+            pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("C1_code"))
+            .replace_strict(config.c1_priority, default=None, return_dtype=pl.UInt8)
+            .alias("C1_priority"),
+            pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("C2_code"))
+            .replace_strict(config.c2_priority, default=None, return_dtype=pl.UInt8)
+            .alias("C2_priority"),
+        )
+        .group_by("date", "station", "prn")
+        .agg(
+            pl.all()
+            .sort_by(
+                pl.col("C1_priority") * 2 + pl.col("C2_priority"), descending=False
+            )
+            .first()
+        )
     )
 
-    # ---- 6. Join back the observation values for the coalesced codes. ----
+    # ---- 4. Join back the observation values for the coalesced codes. ----
     def build_extract_expr(code_col_name: str) -> pl.Expr:
         """
         Generate an expression that extracts the value from the column named in
@@ -125,20 +121,15 @@ def _coalesce_observations(
             return pl.lit(None)
         return expr.otherwise(None)
 
-    coalesced_lf = (
-        coalesced_lf.join(
-            lf.select(
-                "time",
-                "station",
-                "prn",
-                "rx_lat",
-                "rx_lon",
-                "azimuth",
-                "elevation",
-                cs.matches(r"^[CL]\d[A-Z]$"),
+    return (
+        lf.join(
+            codes_lf.select(
+                "date", "station", "prn", "C1_code", "C2_code", "tx_bias", "rx_bias"
             ),
-            on=["time", "station", "prn"],
+            on=["date", "station", "prn"],
+            how="left",
         )
+        .drop("date")
         .with_columns(
             pl.col("C1_code").cat.slice(1, None).cast(pl.Categorical).alias("C1_band"),
             pl.col("C2_code").cat.slice(1, None).cast(pl.Categorical).alias("C2_band"),
@@ -149,6 +140,7 @@ def _coalesce_observations(
             pl.concat_str(pl.lit("S"), pl.col("C1_band")).alias("S1_code"),
             pl.concat_str(pl.lit("S"), pl.col("C2_band")).alias("S2_code"),
         )
+        .drop("C1_band", "C2_band")
         .with_columns(
             build_extract_expr("S1_code").alias("S1"),
             build_extract_expr("S2_code").alias("S2"),
@@ -161,7 +153,7 @@ def _coalesce_observations(
             (pl.col("S1") >= config.min_snr) | (pl.col("S1_null_pc") > 0.5),
             (pl.col("S2") >= config.min_snr) | (pl.col("S2_null_pc") > 0.5),
         )
-        .drop("C1_band", "C2_band", "S1", "S2", "S1_null_pc", "S2_null_pc")
+        .drop("S1", "S2", "S1_null_pc", "S2_null_pc")
         .with_columns(
             build_extract_expr("C1_code").alias("C1"),
             build_extract_expr("C2_code").alias("C2"),
@@ -170,8 +162,6 @@ def _coalesce_observations(
         )
         .drop(cs.matches(r"^[A-Z]\d[A-Z]$"), cs.matches(r"^[LS][12]_code$"))
     )
-
-    return coalesced_lf
 
 
 def _map_frequencies(lf: pl.LazyFrame) -> pl.LazyFrame:
@@ -197,7 +187,7 @@ def _map_frequencies(lf: pl.LazyFrame) -> pl.LazyFrame:
     )
 
 
-def correct_cycle_slip(
+def _correct_cycle_slip(
     time: np.ndarray, stec_p: np.ndarray, tec_diff_tol: float, window_size: int
 ):
     """
@@ -345,7 +335,7 @@ def calc_tec_from_df(
         .with_columns(
             pl.struct([pl.col("time").dt.epoch("s"), pl.col("stec_p")])
             .map_batches(
-                lambda x: correct_cycle_slip(
+                lambda x: _correct_cycle_slip(
                     x.struct.field("time").to_numpy(),
                     x.struct.field("stec_p").to_numpy(),
                     sampling_config.slip_tec_threshold,

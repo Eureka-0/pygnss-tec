@@ -22,7 +22,7 @@ def single_layer_model(
         rx_lon_deg (pl.Expr): Receiver longitude in degrees.
 
     Returns:
-        tuple[pl.Expr, pl.Expr, pl.Expr]: A tuple containing:
+        (pl.Expr, pl.Expr, pl.Expr): A tuple containing,
             - Mapping function (pl.Expr)
             - IPP latitude in degrees (pl.Expr)
             - IPP longitude in degrees (pl.Expr)

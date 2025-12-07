@@ -406,7 +406,7 @@ def calc_tec_from_df(
 
     if not config.retain_intermediate:
         lf = lf.drop(
-            "C1_code", "C2_code", "azimuth", "elevation", "stec_g", "stec_p", "arc_id"
+            "rx_lat", "rx_lon", "azimuth", "elevation", "stec_g", "stec_p", "arc_id"
         )
 
     return lf

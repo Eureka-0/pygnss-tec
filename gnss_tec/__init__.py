@@ -4,6 +4,7 @@ from .tec import (
     calc_tec_from_df,
     calc_tec_from_parquet,
     calc_tec_from_rinex,
+    correct_rx_bias,
     read_bias,
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     "calc_tec_from_df",
     "calc_tec_from_parquet",
     "calc_tec_from_rinex",
+    "correct_rx_bias",
     "read_bias",
 ]

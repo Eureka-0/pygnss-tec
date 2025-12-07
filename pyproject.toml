@@ -48,4 +48,5 @@ dev = [
     "pandas>=2.3.3",
     "pytest>=8.4.2",
     "ruff>=0.14.6",
+    "scipy-stubs>=1.15.3.0",
 ]

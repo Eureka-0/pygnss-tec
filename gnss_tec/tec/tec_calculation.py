@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 from typing import Iterable
 
+import numpy as np
 import polars as pl
 import polars.selectors as cs
 
@@ -196,6 +197,53 @@ def _map_frequencies(lf: pl.LazyFrame) -> pl.LazyFrame:
     )
 
 
+def correct_cycle_slip(
+    time: np.ndarray, stec_p: np.ndarray, tec_diff_tol: float, window_size: int
+):
+    """
+    Correct the cycle slips in the sTEC from carrier phase.
+
+    Args:
+        - time (np.ndarray): the time array, in seconds.
+        - stec_p (np.ndarray): the sTEC from carrier phase, in TECU.
+        - tec_diff_tol (float): the threshold of the TEC difference, in TECU.
+        - window_size (int): the size of the window for the interpolation.
+
+    Returns:
+        - np.ndarray: the cycle-slip-corrected sTEC, in TECU.
+    """
+    stec_p_corrected = stec_p.copy()
+    start = -1
+    end = -1
+
+    for i, tec in enumerate(stec_p_corrected):
+        if i < window_size:
+            continue
+
+        tec_diff = abs(tec - stec_p_corrected[i - 1])
+        slipped = tec_diff > tec_diff_tol
+        if start == -1 and slipped:
+            start = i
+        elif start != -1 and slipped:
+            end = i
+
+        if start != -1 and i == len(stec_p_corrected) - 1:
+            end = len(stec_p_corrected)
+
+        if start != -1 and end != -1:
+            window = slice(start - window_size, start)
+            tp = np.interp(time[start], time[window], stec_p_corrected[window])
+            offset = tp - stec_p_corrected[start]
+            stec_p_corrected[start:end] += offset
+
+            tec_diff = abs(tec - stec_p_corrected[i - 1])
+            slipped = tec_diff > tec_diff_tol
+            start = i if slipped else -1
+            end = -1
+
+    return stec_p_corrected
+
+
 def calc_tec_from_df(
     df: pl.DataFrame | pl.LazyFrame,
     sampling_interval: int | None = None,
@@ -293,28 +341,21 @@ def calc_tec_from_df(
             .over("station", "prn")
             .alias("arc_id")
         )
-        # Detect and correct cycle slips to previous windowed mean in each arc
+        # Detect and correct cycle slips in each arc
         .with_columns(
-            pl.when(
-                pl.col("stec_p")
-                .diff()
-                .abs()
-                .ge(sampling_config.slip_tec_threshold)
-                .fill_null(False)
+            pl.struct([pl.col("time").dt.epoch("s"), pl.col("stec_p")])
+            .map_batches(
+                lambda x: correct_cycle_slip(
+                    x.struct.field("time").to_numpy(),
+                    x.struct.field("stec_p").to_numpy(),
+                    sampling_config.slip_tec_threshold,
+                    sampling_config.slip_correction_window,
+                ),
+                return_dtype=pl.Float64,
             )
-            .then(
-                pl.col("stec_p")
-                - pl.col("stec_p")
-                .rolling_mean(sampling_config.slip_correction_window)
-                .shift(1)
-            )
-            .fill_null(0)
-            .cum_sum()
             .over("station", "prn", "arc_id")
-            .alias("slipped_value")
+            .alias("stec_p")
         )
-        .with_columns(pl.col("stec_p").sub(pl.col("slipped_value")).alias("stec_p"))
-        .drop("slipped_value")
         # Level phase sTEC to pseudorange sTEC using elevation-based weighted offset
         .with_columns(
             (pl.col("stec_g") - pl.col("stec_p")).alias("raw_offset"),
@@ -332,7 +373,7 @@ def calc_tec_from_df(
             # levelled sTEC, in TECU
             (pl.col("stec_p") + pl.col("offset")).alias("stec")
         )
-        .drop("raw_offset", "weight", "offset", "arc_id")
+        .drop("raw_offset", "weight", "offset")
     )
 
     if bias_fn is not None:
@@ -374,7 +415,9 @@ def calc_tec_from_df(
         lf = lf.with_columns(mf.alias("mf"))
 
     if not config.retain_intermediate:
-        lf = lf.drop("C1_code", "C2_code", "azimuth", "elevation", "stec_g", "stec_p")
+        lf = lf.drop(
+            "C1_code", "C2_code", "azimuth", "elevation", "stec_g", "stec_p", "arc_id"
+        )
 
     return lf
 

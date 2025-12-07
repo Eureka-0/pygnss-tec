@@ -151,19 +151,19 @@ class SamplingConfig:
     """TECU threshold to detect cycle slips."""
 
     slip_correction_window: int
-    """Window size for slip correction in number of samples (correct to window mean)."""
+    """Window size for slip correction in number of samples."""
 
 
 def get_sampling_config(sampling_interval: int) -> SamplingConfig:
     if sampling_interval <= 5:
         return SamplingConfig(
             arc_interval=pl.duration(minutes=1),
-            slip_tec_threshold=1.0,
+            slip_tec_threshold=0.5,
             slip_correction_window=20,
         )
     else:
         return SamplingConfig(
             arc_interval=pl.duration(minutes=5),
-            slip_tec_threshold=5.0,
+            slip_tec_threshold=2.0,
             slip_correction_window=10,
         )

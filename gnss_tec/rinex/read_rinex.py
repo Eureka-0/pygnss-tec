@@ -101,6 +101,13 @@ def _handle_fn(fn: str | Path | Iterable[str | Path]) -> list[str]:
     return fn_list
 
 
+def _match_code(code: str) -> bool:
+    return (
+        re.match(r"[A-Z]\d[A-Z]$", code) is not None
+        or re.match(r"[A-Z]\d$", code) is not None
+    )
+
+
 def read_rinex_obs(
     obs_fn: str | Path | Iterable[str | Path],
     nav_fn: str | Path | Iterable[str | Path] | None = None,
@@ -167,7 +174,7 @@ def read_rinex_obs(
         codes=None if codes is None else list(set(codes)),
         pivot=pivot,
     )
-    codes = list(filter(lambda x: re.match(r"[A-Z]\d{1}[A-Z]$", x), batch.schema.names))
+    codes = list(filter(_match_code, batch.schema.names))
     ordered_cols = ["time", "station", "prn"]
     rx_x = header_dict["rx_x"]
     rx_y = header_dict["rx_y"]

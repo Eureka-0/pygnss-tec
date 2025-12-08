@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
+from typing import Literal
 
 import polars as pl
 
@@ -63,8 +64,8 @@ class TECConfig:
     c2_codes: Mapping[str, list[str]] = field(default_factory=lambda: {})
     """Observation codes priority list for C2 measurements."""
 
-    retain_intermediate: bool = False
-    """Whether to retain intermediate calculation columns in the output DataFrame."""
+    retain_intermediate: str | Iterable[str] | None | Literal["all"] = None
+    """Names of intermediate columns to retain in the output DataFrame."""
 
     @property
     def ipp_height_m(self) -> float:

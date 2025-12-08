@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import polars as pl
@@ -123,9 +123,7 @@ def _coalesce_observations(
 
     return (
         lf.join(
-            codes_lf.select(
-                "date", "station", "prn", "C1_code", "C2_code", "tx_bias", "rx_bias"
-            ),
+            codes_lf.drop("constellation", "C1_priority", "C2_priority"),
             on=["date", "station", "prn"],
             how="left",
         )
@@ -366,7 +364,9 @@ def calc_tec_from_df(
         .drop("raw_offset", "weight", "offset")
     )
 
+    intermediate_cols = {"azimuth", "elevation", "stec_g", "stec_p", "arc_id"}
     if bias_fn is not None:
+        intermediate_cols.update({"tx_bias", "rx_bias"})
         lf = lf.with_columns(
             # Convert biases from ns to TECU
             pl.col("tx_bias").mul(tecu_per_ns),
@@ -375,8 +375,6 @@ def calc_tec_from_df(
             # sTEC corrected for DCB biases, in TECU
             pl.col("stec").sub(pl.col("tx_bias") + pl.col("rx_bias").fill_null(0))
         )
-        if not config.retain_intermediate:
-            lf = lf.drop("tx_bias", "rx_bias")
 
     mf, ipp_lat, ipp_lon = single_layer_model(
         pl.col("azimuth"),
@@ -404,10 +402,18 @@ def calc_tec_from_df(
     if not rx_bias:
         lf = lf.with_columns(mf.alias("mf"))
 
-    if not config.retain_intermediate:
-        lf = lf.drop(
-            "rx_lat", "rx_lon", "azimuth", "elevation", "stec_g", "stec_p", "arc_id"
-        )
+    if config.retain_intermediate != "all":
+        cols_to_retain = set()
+        if config.retain_intermediate is None:
+            pass
+        elif isinstance(config.retain_intermediate, str):
+            cols_to_retain.add(config.retain_intermediate)
+        else:
+            cols_to_retain.update(config.retain_intermediate)
+
+        cols_available = set(lf.collect_schema().names())
+        cols_to_drop = cols_available.intersection(intermediate_cols) - cols_to_retain
+        lf = lf.drop(cols_to_drop)
 
     return lf
 

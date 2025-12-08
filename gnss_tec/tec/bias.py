@@ -13,8 +13,12 @@ from ..rinex import get_leap_seconds
 
 
 def _read_bias_file(fn: str | Path) -> pl.LazyFrame:
-    with gzip.open(fn, "rt") as f:
-        lines = f.readlines()
+    if str(fn).endswith(".gz"):
+        with gzip.open(fn, "rt") as f:
+            lines = f.readlines()
+    else:
+        with open(fn, "r") as f:
+            lines = f.readlines()
 
     if not lines:
         raise ValueError(f"Bias file {fn} is empty.")
@@ -168,7 +172,7 @@ def correct_rx_bias(
     lf = (
         lf.group_by("date", "station", "constellation", "C1_code", "C2_code")
         .map_groups(estimate_func, schema=schema)
-        .with_columns(pl.col("stec").sub(pl.col("rx_bias")))
+        .with_columns(pl.col("stec").sub(pl.col("rx_bias").fill_null(0)))
         .with_columns(
             pl.col("stec").truediv(pl.col("mf")).alias("vtec"),
             # Adjust time back to UTC

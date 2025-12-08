@@ -3,8 +3,9 @@ from __future__ import annotations
 import gzip
 import io
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Literal
 
 import polars as pl
 from scipy.optimize import minimize_scalar
@@ -197,7 +198,7 @@ def _mstd_rx_bias(df: pl.DataFrame) -> pl.DataFrame:
             (pl.col("stec").sub(bias) / pl.col("mf")).alias("vtec")
         ).with_columns(pl.col("vtec").std().over("time").mean().alias("mean_std"))
 
-        if corrected.filter(pl.col("vtec") < 1).height > 0:
+        if corrected.filter(pl.col("vtec") <= 0).height > 0:
             return 1e6
         else:
             return corrected.get_column("mean_std").item(0)

@@ -64,6 +64,15 @@ class TECConfig:
     c2_codes: Mapping[str, list[str]] = field(default_factory=lambda: {})
     """Observation codes priority list for C2 measurements."""
 
+    rx_bias: Literal["external", "mstd", "lsq"] | None = "external"
+    """Method to correct receiver bias.
+        - "external": Use external bias file(s). If the station is not found in the bias
+            file(s), this will result in an empty dataframe.
+        - "mstd": Estimate receiver bias using the Minimum Standard Deviation method.
+        - "lsq": Estimate receiver bias using Least Squares fitting.
+        - None: Do not correct receiver bias.
+    """
+
     retain_intermediate: str | Iterable[str] | None | Literal["all"] = None
     """Names of intermediate columns to retain in the output DataFrame."""
 

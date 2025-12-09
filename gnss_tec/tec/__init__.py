@@ -1,4 +1,4 @@
-from .bias import correct_rx_bias, read_bias
+from .bias import read_bias
 from .constants import SUPPORTED_CONSTELLATIONS, SUPPORTED_RINEX_VERSIONS, TECConfig
 from .tec_calculation import (
     calc_tec_from_df,
@@ -10,7 +10,6 @@ __all__ = [
     "SUPPORTED_CONSTELLATIONS",
     "SUPPORTED_RINEX_VERSIONS",
     "TECConfig",
-    "correct_rx_bias",
     "read_bias",
     "calc_tec_from_df",
     "calc_tec_from_parquet",

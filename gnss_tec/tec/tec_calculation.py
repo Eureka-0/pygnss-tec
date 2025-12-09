@@ -9,13 +9,13 @@ import polars as pl
 import polars.selectors as cs
 
 from ..rinex import get_leap_seconds, read_rinex_obs
-from .bias import read_bias
+from .bias import estimate_rx_bias, read_bias
 from .constants import SIGNAL_FREQ, TECConfig, c, get_sampling_config
 from .mapping_func import single_layer_model
 
 
 def _coalesce_observations(
-    lf: pl.LazyFrame, bias_lf: pl.LazyFrame | None, rx_bias: bool, config: TECConfig
+    lf: pl.LazyFrame, bias_lf: pl.LazyFrame | None, config: TECConfig
 ) -> pl.LazyFrame:
     # --- 1. Prepare coalesced observation codes for C1 and C2. ---
     lf = lf.with_columns(pl.col("time").dt.date().alias("date"))
@@ -59,7 +59,7 @@ def _coalesce_observations(
         )
         codes_lf = codes_lf.join(tx_bias_lf, on=["prn", "C1_code", "C2_code", "date"])
 
-        if rx_bias:
+        if config.rx_bias == "external":
             rx_bias_lf = bias_lf.drop_nulls("station").select(
                 "station",
                 constellation="prn",
@@ -237,8 +237,6 @@ def calc_tec_from_df(
     sampling_interval: int | None = None,
     bias_fn: str | Path | Iterable[str | Path] | None = None,
     config: TECConfig = TECConfig(),
-    *,
-    rx_bias: bool = True,
 ) -> pl.LazyFrame:
     """
     Calculate the Total Electron Content (TEC) from a Polars DataFrame or LazyFrame
@@ -254,9 +252,6 @@ def calc_tec_from_df(
             calculation. Defaults to None.
         config (TECConfig, optional): Configuration parameters for TEC calculation.
             Defaults to TECConfig().
-        rx_bias (bool, optional): Whether to apply receiver bias correction. If False,
-            mapping function column will be retained for possible subsequent receiver
-            bias correction. Default is True.
 
     Returns:
         pl.LazyFrame: A LazyFrame containing the calculated TEC values.
@@ -268,8 +263,8 @@ def calc_tec_from_df(
             pl.col("elevation") >= config.min_elevation,
             pl.col("prn").cat.slice(0, 1).is_in(list(config.constellations)),
         )
-        # drop D-code and S-code observations
-        .drop(cs.matches(r"^[D,S]\d[A-Z]$"))
+        # drop D-code observations
+        .drop(cs.matches(r"^D\d[A-Z]$"))
     )
 
     if sampling_interval is None:
@@ -285,7 +280,6 @@ def calc_tec_from_df(
             .collect()
             .item()
         )
-
     sampling_config = get_sampling_config(sampling_interval)
 
     # Determine if the time column is in UTC or GPS time
@@ -295,14 +289,30 @@ def calc_tec_from_df(
         if is_utc
         else pl.duration(seconds=0)
     )
-
     lf = lf.with_columns(
         # Adjust time to GPS time for correctly joining with bias data
         pl.col("time").add(leap_seconds).dt.replace_time_zone(None)
     )
+
     bias_lf = None if bias_fn is None else read_bias(bias_fn)
-    lf = _coalesce_observations(lf, bias_lf, rx_bias, config)
+    lf = _coalesce_observations(lf, bias_lf, config)
     lf = _map_frequencies(lf)
+
+    mf, ipp_lat, ipp_lon = single_layer_model(
+        pl.col("azimuth"),
+        pl.col("elevation"),
+        pl.col("rx_lat"),
+        pl.col("rx_lon"),
+        config,
+    )
+    lf = lf.with_columns(
+        # Mapping function
+        mf.alias("mf"),
+        # IPP Latitude in degrees
+        ipp_lat.alias("ipp_lat"),
+        # IPP Longitude in degrees
+        ipp_lon.alias("ipp_lon"),
+    )
 
     f1 = pl.col("C1_freq")
     f2 = pl.col("C2_freq")
@@ -334,8 +344,8 @@ def calc_tec_from_df(
             pl.struct([pl.col("time").dt.epoch("s"), pl.col("stec_p")])
             .map_batches(
                 lambda x: _correct_cycle_slip(
-                    x.struct.field("time").to_numpy(),
-                    x.struct.field("stec_p").to_numpy(),
+                    x.struct.field("time").fill_null(np.nan).to_numpy(),
+                    x.struct.field("stec_p").fill_null(np.nan).to_numpy(),
                     sampling_config.slip_tec_threshold,
                     sampling_config.slip_correction_window,
                 ),
@@ -361,46 +371,55 @@ def calc_tec_from_df(
             # levelled sTEC, in TECU
             (pl.col("stec_p") + pl.col("offset")).alias("stec")
         )
-        .drop("raw_offset", "weight", "offset")
+        .drop("raw_offset", "weight")
     )
 
-    intermediate_cols = {"azimuth", "elevation", "stec_g", "stec_p", "arc_id"}
+    intermediate_cols = {
+        "azimuth",
+        "elevation",
+        "C1_freq",
+        "C2_freq",
+        "mf",
+        "stec_g",
+        "stec_p",
+        "arc_id",
+        "offset",
+    }
     if bias_fn is not None:
         intermediate_cols.update({"tx_bias", "rx_bias"})
+
         lf = lf.with_columns(
             # Convert biases from ns to TECU
-            pl.col("tx_bias").mul(tecu_per_ns),
-            pl.col("rx_bias").mul(tecu_per_ns),
+            pl.col("tx_bias").mul(tecu_per_ns)
         ).with_columns(
-            # sTEC corrected for DCB biases, in TECU
-            pl.col("stec").sub(pl.col("tx_bias") + pl.col("rx_bias").fill_null(0))
+            # sTEC corrected for satellite DCB biases, in TECU
+            pl.col("stec").sub(pl.col("tx_bias")).alias("stec_dcb_corrected")
         )
 
-    mf, ipp_lat, ipp_lon = single_layer_model(
-        pl.col("azimuth"),
-        pl.col("elevation"),
-        pl.col("rx_lat"),
-        pl.col("rx_lon"),
-        config,
-    )
+        if config.rx_bias != "external" and config.rx_bias is not None:
+            lf = estimate_rx_bias(lf, method=config.rx_bias)
+        else:
+            lf = lf.with_columns(
+                # Convert biases from ns to TECU
+                pl.col("rx_bias").mul(tecu_per_ns)
+            )
 
-    lf = (
-        lf.with_columns(
+        lf = lf.with_columns(
+            # sTEC corrected for DCB biases, in TECU
+            pl.col("stec_dcb_corrected").sub(pl.col("rx_bias").fill_null(0))
+        ).with_columns(
             # vTEC, in TECU
-            (pl.col("stec") / mf).alias("vtec"),
-            # IPP Latitude in degrees
-            ipp_lat.alias("ipp_lat"),
-            # IPP Longitude in degrees
-            ipp_lon.alias("ipp_lon"),
+            (pl.col("stec_dcb_corrected") / pl.col("mf")).alias("vtec"),
             # Adjust time back to UTC
             pl.col("time").sub(leap_seconds).dt.replace_time_zone("UTC"),
         )
-        .drop("C1_freq", "C2_freq")
-        .sort("time", "station", "prn")
-    )
-
-    if not rx_bias:
-        lf = lf.with_columns(mf.alias("mf"))
+    else:
+        lf = lf.with_columns(
+            # vTEC, in TECU
+            (pl.col("stec") / pl.col("mf")).alias("vtec"),
+            # Adjust time back to UTC
+            pl.col("time").sub(leap_seconds).dt.replace_time_zone("UTC"),
+        )
 
     if config.retain_intermediate != "all":
         cols_to_retain = set()
@@ -415,15 +434,13 @@ def calc_tec_from_df(
         cols_to_drop = cols_available.intersection(intermediate_cols) - cols_to_retain
         lf = lf.drop(cols_to_drop)
 
-    return lf
+    return lf.sort("time", "station", "prn")
 
 
 def calc_tec_from_parquet(
     parquet_fn: str | Path,
     bias_fn: str | Path | Iterable[str | Path] | None = None,
     config: TECConfig = TECConfig(),
-    *,
-    rx_bias: bool = True,
 ) -> pl.LazyFrame:
     """
     Calculate the Total Electron Content (TEC) from a Parquet file containing GNSS
@@ -437,9 +454,6 @@ def calc_tec_from_parquet(
             calculation. Defaults to None.
         config (TECConfig, optional): Configuration parameters for TEC calculation.
             Defaults to TECConfig().
-        rx_bias (bool, optional): Whether to apply receiver bias correction. If False,
-            mapping function column will be retained for possible subsequent receiver
-            bias correction. Default is True.
 
     Returns:
         pl.LazyFrame: A LazyFrame containing the calculated TEC values.
@@ -468,7 +482,7 @@ def calc_tec_from_parquet(
         pl.lit(rx_lon, dtype=pl.Float32).alias("rx_lon"),
     )
 
-    return calc_tec_from_df(lf, sampling_interval, bias_fn, config, rx_bias=rx_bias)
+    return calc_tec_from_df(lf, sampling_interval, bias_fn, config)
 
 
 def calc_tec_from_rinex(
@@ -478,7 +492,6 @@ def calc_tec_from_rinex(
     config: TECConfig = TECConfig(),
     *,
     station: str | None = None,
-    rx_bias: bool = True,
 ) -> pl.LazyFrame:
     """
     Calculate the Total Electron Content (TEC) from RINEX observation and navigation
@@ -497,9 +510,6 @@ def calc_tec_from_rinex(
             Defaults to TECConfig().
         station (str | None, optional): Custom station name to assign to the data. If
             None, the station name from the RINEX header is used. Defaults to None.
-        rx_bias (bool, optional): Whether to apply receiver bias correction. If False,
-            mapping function column will be retained for possible subsequent receiver
-            bias correction. Default is True.
 
     Returns:
         pl.LazyFrame: A LazyFrame containing the calculated TEC values.
@@ -511,6 +521,4 @@ def calc_tec_from_rinex(
         pl.lit(header.rx_geodetic[1], dtype=pl.Float32).alias("rx_lon"),
     )
 
-    return calc_tec_from_df(
-        lf, header.sampling_interval, bias_fn, config, rx_bias=rx_bias
-    )
+    return calc_tec_from_df(lf, header.sampling_interval, bias_fn, config)

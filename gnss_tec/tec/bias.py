@@ -11,8 +11,6 @@ import numpy as np
 import polars as pl
 from scipy.optimize import lsq_linear, minimize_scalar
 
-from ..rinex import get_leap_seconds
-
 
 def _read_bias_file(fn: str | Path) -> pl.LazyFrame:
     if str(fn).endswith(".gz"):
@@ -124,38 +122,19 @@ def read_bias(fn: str | Path | Iterable[str | Path]) -> pl.LazyFrame:
     return pl.concat([_read_bias_file(f) for f in fn_list])
 
 
-def correct_rx_bias(
-    df: pl.DataFrame | pl.LazyFrame,
-    method: Literal["mstd", "lsq"],
-    retain_rx_bias: bool = False,
+def estimate_rx_bias(
+    df: pl.DataFrame | pl.LazyFrame, method: Literal["mstd", "lsq"]
 ) -> pl.LazyFrame:
     """
-    Correct receiver bias in sTEC measurements using the specified method.
+    Estimate receiver bias in sTEC measurements.
 
     Args:
         df (pl.DataFrame | pl.LazyFrame): Input DataFrame containing sTEC measurements.
         method (Literal["mstd", "lsq"]): Method for bias correction.
-        retain_rx_bias (bool, optional): Whether to retain the estimated receiver bias
-            in the output DataFrame. Defaults to False.
 
     Returns:
-        pl.LazyFrame: LazyFrame with receiver bias corrected sTEC and computed vTEC.
+        pl.LazyFrame: LazyFrame with receiver bias estimates added, in TECU.
     """
-    lf = df.lazy()
-
-    # Determine if the time column is in UTC or GPS time
-    is_utc = lf.head(1).collect().get_column("time")[0].tzinfo.key == "UTC"
-    leap_seconds = (
-        get_leap_seconds(pl.col("time").dt.replace_time_zone(None))
-        if is_utc
-        else pl.duration(seconds=0)
-    )
-
-    lf = lf.with_columns(
-        # Adjust time to GPS time for correctly joining with bias data
-        pl.col("time").add(leap_seconds).dt.replace_time_zone(None)
-    )
-
     if method == "mstd":
         estimate_func = _mstd_rx_bias
     elif method == "lsq":
@@ -163,25 +142,17 @@ def correct_rx_bias(
     else:
         raise ValueError(f"Unknown bias correction method: {method}")
 
+    lf = df.lazy().with_columns(
+        pl.col("time").dt.date().alias("date"),
+        pl.col("prn").cat.slice(0, 1).alias("constellation"),
+    )
+    schema = lf.collect_schema()
+    schema.update({"rx_bias": pl.Float64()})
     lf = (
-        lf.with_columns(
-            pl.col("time").dt.date().alias("date"),
-            pl.col("prn").cat.slice(0, 1).alias("constellation"),
-            pl.lit(None).alias("rx_bias"),
-        )
-        .group_by("date", "station", "constellation", "C1_code", "C2_code")
-        .map_groups(estimate_func, schema=None)
-        .with_columns(pl.col("stec").sub(pl.col("rx_bias").fill_null(0)))
-        .with_columns(
-            pl.col("stec").truediv(pl.col("mf")).alias("vtec"),
-            # Adjust time back to UTC
-            pl.col("time").sub(leap_seconds).dt.replace_time_zone("UTC"),
-        )
+        lf.group_by("date", "station", "constellation", "C1_code", "C2_code")
+        .map_groups(estimate_func, schema=schema)
         .drop("date", "constellation")
     )
-
-    if not retain_rx_bias:
-        lf = lf.drop("rx_bias")
 
     return lf
 
@@ -203,7 +174,7 @@ def _mstd_rx_bias(df: pl.DataFrame) -> pl.DataFrame:
 
     def mean_std(bias: float) -> float:
         corrected = df_night.with_columns(
-            (pl.col("stec").sub(bias) / pl.col("mf")).alias("vtec")
+            (pl.col("stec_dcb_corrected").sub(bias) / pl.col("mf")).alias("vtec")
         ).with_columns(pl.col("vtec").std().over("time").mean().alias("mean_std"))
 
         if corrected.filter(pl.col("vtec") <= 0).height > 0:
@@ -255,7 +226,7 @@ def _lsq_rx_bias(df: pl.DataFrame) -> pl.DataFrame:
         .fill_null(np.nan)
         .to_numpy()
     )
-    b = df.get_column("stec").fill_null(np.nan).to_numpy()
+    b = df.get_column("stec_dcb_corrected").fill_null(np.nan).to_numpy()
     result = lsq_linear(A, b)
     df = df.with_columns(pl.lit(result.x[0]).alias("rx_bias"))
     return df

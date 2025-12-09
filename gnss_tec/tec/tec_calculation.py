@@ -397,7 +397,9 @@ def calc_tec_from_df(
         )
 
         if config.rx_bias != "external" and config.rx_bias is not None:
-            lf = estimate_rx_bias(lf, method=config.rx_bias)
+            lf = estimate_rx_bias(
+                lf, method=config.rx_bias, downsample=sampling_interval < 10
+            )
         else:
             lf = lf.with_columns(
                 # Convert biases from ns to TECU

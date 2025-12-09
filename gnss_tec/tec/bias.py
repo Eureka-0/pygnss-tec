@@ -123,7 +123,7 @@ def read_bias(fn: str | Path | Iterable[str | Path]) -> pl.LazyFrame:
 
 
 def estimate_rx_bias(
-    df: pl.DataFrame | pl.LazyFrame, method: Literal["mstd", "lsq"]
+    df: pl.DataFrame | pl.LazyFrame, method: Literal["mstd", "lsq"], downsample: bool
 ) -> pl.LazyFrame:
     """
     Estimate receiver bias in sTEC measurements.
@@ -131,6 +131,7 @@ def estimate_rx_bias(
     Args:
         df (pl.DataFrame | pl.LazyFrame): Input DataFrame containing sTEC measurements.
         method (Literal["mstd", "lsq"]): Method for bias correction.
+        downsample (bool): Whether to downsample the data before estimation.
 
     Returns:
         pl.LazyFrame: LazyFrame with receiver bias estimates added, in TECU.
@@ -142,23 +143,45 @@ def estimate_rx_bias(
     else:
         raise ValueError(f"Unknown bias correction method: {method}")
 
-    lf = df.lazy().with_columns(
+    lf = df.lazy()
+    if downsample:
+        bias_lf = lf.group_by_dynamic(
+            "time", every="30s", group_by=["station", "prn"]
+        ).agg(pl.all().first())
+    else:
+        bias_lf = lf
+
+    bias_lf = bias_lf.with_columns(
         pl.col("time").dt.date().alias("date"),
         pl.col("prn").cat.slice(0, 1).alias("constellation"),
     )
-    schema = lf.collect_schema()
-    schema.update({"rx_bias": pl.Float64()})
-    lf = (
-        lf.group_by("date", "station", "constellation", "C1_code", "C2_code")
-        .map_groups(estimate_func, schema=schema)
+    bias_lf = bias_lf.group_by(
+        "date", "station", "constellation", "C1_code", "C2_code"
+    ).agg(
+        pl.struct("time", "stec_dcb_corrected", "mf", "ipp_lat", "ipp_lon", "rx_lat")
+        .map_batches(estimate_func, return_dtype=pl.Float64, returns_scalar=True)
+        .alias("rx_bias")
+    )
+
+    return (
+        lf.with_columns(
+            pl.col("time").dt.date().alias("date"),
+            pl.col("prn").cat.slice(0, 1).alias("constellation"),
+        )
+        .drop("rx_bias")
+        .join(
+            bias_lf,
+            on=["date", "station", "constellation", "C1_code", "C2_code"],
+            how="left",
+        )
+        .fill_nan(None)
         .drop("date", "constellation")
     )
 
-    return lf
 
-
-def _mstd_rx_bias(df: pl.DataFrame) -> pl.DataFrame:
-    df_night = (
+def _mstd_rx_bias(s: pl.Series) -> float:
+    df = s.struct.unnest()
+    df = (
         df.with_columns(
             pl.col("time").add(pl.duration(hours=pl.col("ipp_lon") / 15)).alias("lt")
         )
@@ -169,25 +192,22 @@ def _mstd_rx_bias(df: pl.DataFrame) -> pl.DataFrame:
         )
         .filter((pl.col("lt") >= 18) | (pl.col("lt") <= 6))
     )
-    if df_night.height < 10:
-        return df.with_columns(pl.lit(None).alias("rx_bias"))
+    if df.height < 10:
+        return np.nan
 
     def mean_std(bias: float) -> float:
-        corrected = df_night.with_columns(
+        corrected = df.with_columns(
             (pl.col("stec_dcb_corrected").sub(bias) / pl.col("mf")).alias("vtec")
         ).with_columns(pl.col("vtec").std().over("time").mean().alias("mean_std"))
 
-        if corrected.filter(pl.col("vtec") <= 0).height > 0:
-            return 1e6
-        else:
-            return corrected.get_column("mean_std").item(0)
+        return corrected.get_column("mean_std").item(0)
 
     result = minimize_scalar(mean_std, bounds=(-500, 500), method="bounded")
-    df = df.with_columns(pl.lit(result.x).alias("rx_bias"))
-    return df
+    return result.x
 
 
-def _lsq_rx_bias(df: pl.DataFrame) -> pl.DataFrame:
+def _lsq_rx_bias(s: pl.Series) -> float:
+    df = s.struct.unnest()
     A = (
         df.with_columns(
             (pl.col("time") - pl.col("time").dt.truncate("1d"))
@@ -228,5 +248,4 @@ def _lsq_rx_bias(df: pl.DataFrame) -> pl.DataFrame:
     )
     b = df.get_column("stec_dcb_corrected").fill_null(np.nan).to_numpy()
     result = lsq_linear(A, b)
-    df = df.with_columns(pl.lit(result.x[0]).alias("rx_bias"))
-    return df
+    return result.x[0]

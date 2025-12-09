@@ -7,8 +7,9 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 import polars as pl
-from scipy.optimize import minimize_scalar
+from scipy.optimize import lsq_linear, minimize_scalar
 
 from ..rinex import get_leap_seconds
 
@@ -125,7 +126,7 @@ def read_bias(fn: str | Path | Iterable[str | Path]) -> pl.LazyFrame:
 
 def correct_rx_bias(
     df: pl.DataFrame | pl.LazyFrame,
-    method: Literal["mstd"] = "mstd",
+    method: Literal["mstd", "lsq"],
     retain_rx_bias: bool = False,
 ) -> pl.LazyFrame:
     """
@@ -133,18 +134,13 @@ def correct_rx_bias(
 
     Args:
         df (pl.DataFrame | pl.LazyFrame): Input DataFrame containing sTEC measurements.
-        method (Literal["mstd"], optional): Method for bias correction. Defaults to "mstd".
+        method (Literal["mstd", "lsq"]): Method for bias correction.
         retain_rx_bias (bool, optional): Whether to retain the estimated receiver bias
             in the output DataFrame. Defaults to False.
 
     Returns:
         pl.LazyFrame: LazyFrame with receiver bias corrected sTEC and computed vTEC.
     """
-    if method == "mstd":
-        estimate_func = _mstd_rx_bias
-    else:
-        raise ValueError(f"Unknown bias correction method: {method}")
-
     lf = df.lazy()
 
     # Determine if the time column is in UTC or GPS time
@@ -160,26 +156,28 @@ def correct_rx_bias(
         pl.col("time").add(leap_seconds).dt.replace_time_zone(None)
     )
 
-    lf = lf.with_columns(
-        pl.col("time").dt.date().alias("date"),
-        pl.col("prn").cat.slice(0, 1).alias("constellation"),
-        pl.col("time").add(pl.duration(hours=pl.col("ipp_lon") / 15)).alias("lt"),
-    ).with_columns(
-        pl.col("lt").sub(pl.col("lt").dt.truncate("1d")).dt.total_hours(fractional=True)
-    )
+    if method == "mstd":
+        estimate_func = _mstd_rx_bias
+    elif method == "lsq":
+        estimate_func = _lsq_rx_bias
+    else:
+        raise ValueError(f"Unknown bias correction method: {method}")
 
-    schema = lf.collect_schema()
-    schema.update({"rx_bias": pl.Float64()})
     lf = (
-        lf.group_by("date", "station", "constellation", "C1_code", "C2_code")
-        .map_groups(estimate_func, schema=schema)
+        lf.with_columns(
+            pl.col("time").dt.date().alias("date"),
+            pl.col("prn").cat.slice(0, 1).alias("constellation"),
+            pl.lit(None).alias("rx_bias"),
+        )
+        .group_by("date", "station", "constellation", "C1_code", "C2_code")
+        .map_groups(estimate_func, schema=None)
         .with_columns(pl.col("stec").sub(pl.col("rx_bias").fill_null(0)))
         .with_columns(
             pl.col("stec").truediv(pl.col("mf")).alias("vtec"),
             # Adjust time back to UTC
             pl.col("time").sub(leap_seconds).dt.replace_time_zone("UTC"),
         )
-        .drop("date", "constellation", "lt", "mf")
+        .drop("date", "constellation")
     )
 
     if not retain_rx_bias:
@@ -189,7 +187,17 @@ def correct_rx_bias(
 
 
 def _mstd_rx_bias(df: pl.DataFrame) -> pl.DataFrame:
-    df_night = df.filter((pl.col("lt") >= 18) | (pl.col("lt") <= 6))
+    df_night = (
+        df.with_columns(
+            pl.col("time").add(pl.duration(hours=pl.col("ipp_lon") / 15)).alias("lt")
+        )
+        .with_columns(
+            pl.col("lt")
+            .sub(pl.col("lt").dt.truncate("1d"))
+            .dt.total_hours(fractional=True)
+        )
+        .filter((pl.col("lt") >= 18) | (pl.col("lt") <= 6))
+    )
     if df_night.height < 10:
         return df.with_columns(pl.lit(None).alias("rx_bias"))
 
@@ -204,4 +212,50 @@ def _mstd_rx_bias(df: pl.DataFrame) -> pl.DataFrame:
             return corrected.get_column("mean_std").item(0)
 
     result = minimize_scalar(mean_std, bounds=(-500, 500), method="bounded")
-    return df.with_columns(pl.lit(result.x).alias("rx_bias"))
+    df = df.with_columns(pl.lit(result.x).alias("rx_bias"))
+    return df
+
+
+def _lsq_rx_bias(df: pl.DataFrame) -> pl.DataFrame:
+    A = (
+        df.with_columns(
+            (pl.col("time") - pl.col("time").dt.truncate("1d"))
+            .dt.total_hours(fractional=True)
+            .mul(np.pi / 12)
+            .alias("h"),
+            (pl.col("ipp_lat") - pl.col("rx_lat")).mul(np.pi / 180).alias("phi"),
+        )
+        .with_columns(
+            (pl.col("mf") * pl.col("h")).alias("h1"),
+            (pl.col("mf") * pl.col("phi")).alias("phi1"),
+            (pl.col("mf") * pl.col("h").pow(2)).alias("h2"),
+            (pl.col("mf") * pl.col("phi").pow(2)).alias("phi2"),
+            (pl.col("mf") * pl.col("h") * pl.col("phi")).alias("hphi"),
+            (pl.col("mf") * pl.col("h").pow(2) * pl.col("phi")).alias("h2phi"),
+            (pl.col("mf") * pl.col("h") * pl.col("phi").pow(2)).alias("hphi2"),
+            (pl.col("mf") * pl.col("h").pow(2) * pl.col("phi").pow(2)).alias("h2phi2"),
+            (pl.col("mf") * pl.col("h").cos()).alias("cosh"),
+            (pl.col("mf") * pl.col("h").sin()).alias("sinh"),
+            (pl.col("mf") * pl.col("h").mul(2).cos()).alias("cos2h"),
+            (pl.col("mf") * pl.col("h").mul(2).sin()).alias("sin2h"),
+            (pl.col("mf") * pl.col("h").mul(3).cos()).alias("cos3h"),
+            (pl.col("mf") * pl.col("h").mul(3).sin()).alias("sin3h"),
+            (pl.col("mf") * pl.col("h").mul(4).cos()).alias("cos4h"),
+            (pl.col("mf") * pl.col("h").mul(4).sin()).alias("sin4h"),
+        )
+        .select(
+            pl.lit(1).alias("intercept"),
+            pl.col(
+                "mf", "h1", "phi1", "h2", "phi2", "hphi", "h2phi", "hphi2", "h2phi2"
+            ),
+            pl.col(
+                "cosh", "sinh", "cos2h", "sin2h", "cos3h", "sin3h", "cos4h", "sin4h"
+            ),
+        )
+        .fill_null(np.nan)
+        .to_numpy()
+    )
+    b = df.get_column("stec").fill_null(np.nan).to_numpy()
+    result = lsq_linear(A, b)
+    df = df.with_columns(pl.lit(result.x[0]).alias("rx_bias"))
+    return df

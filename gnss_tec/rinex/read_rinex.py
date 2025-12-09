@@ -51,6 +51,38 @@ class RinexObsHeader:
     leap_seconds: int | None
     """Number of leap seconds."""
 
+    def to_dict(self) -> dict:
+        return {
+            "version": self.version,
+            "constellation": self.constellation,
+            "marker_name": self.marker_name,
+            "marker_type": self.marker_type,
+            "rx_ecef": self.rx_ecef,
+            "rx_geodetic": self.rx_geodetic,
+            "sampling_interval": self.sampling_interval,
+            "leap_seconds": self.leap_seconds,
+        }
+
+    def to_metadata(self) -> dict[str, str]:
+        """
+        Convert the RinexObsHeader to a dictionary suitable for storing as Parquet file
+        metadata using Polars.
+        """
+        return {
+            "version": self.version,
+            "constellation": self.constellation or "",
+            "marker_name": self.marker_name,
+            "marker_type": self.marker_type or "",
+            "rx_ecef_x": str(self.rx_ecef[0]),
+            "rx_ecef_y": str(self.rx_ecef[1]),
+            "rx_ecef_z": str(self.rx_ecef[2]),
+            "rx_geodetic_lat": str(self.rx_geodetic[0]),
+            "rx_geodetic_lon": str(self.rx_geodetic[1]),
+            "rx_geodetic_alt": str(self.rx_geodetic[2]),
+            "sampling_interval": str(self.sampling_interval or ""),
+            "leap_seconds": str(self.leap_seconds or ""),
+        }
+
 
 def _handle_fn(fn: str | Path | Iterable[str | Path]) -> list[str]:
     if isinstance(fn, (str, Path)):
@@ -69,12 +101,20 @@ def _handle_fn(fn: str | Path | Iterable[str | Path]) -> list[str]:
     return fn_list
 
 
+def _match_code(code: str) -> bool:
+    return (
+        re.match(r"[A-Z]\d[A-Z]$", code) is not None
+        or re.match(r"[A-Z]\d$", code) is not None
+    )
+
+
 def read_rinex_obs(
     obs_fn: str | Path | Iterable[str | Path],
     nav_fn: str | Path | Iterable[str | Path] | None = None,
     constellations: str | None = None,
     codes: Iterable[str] | None = None,
     *,
+    utc: bool = True,
     station: str | None = None,
     pivot: bool = True,
 ) -> tuple[RinexObsHeader, pl.LazyFrame]:
@@ -93,6 +133,9 @@ def read_rinex_obs(
         codes (Iterable[str] | None, optional): Specific observation codes to extract
             (e.g., ['C1C', 'L1C']). If None, all available observation types are
             included. Defaults to None.
+        utc (bool, optional): Whether to convert time to UTC. If False, time will be in
+            GPS time. In this case, ensure that leap seconds **are consistent** across
+            all input files. Defaults to True.
         station (str | None, optional): Station name to assign to the DataFrame. If
             None, the station name from the RINEX header is used. Defaults to None.
         pivot (bool, optional): Whether to pivot the DataFrame so that each observation
@@ -131,7 +174,7 @@ def read_rinex_obs(
         codes=None if codes is None else list(set(codes)),
         pivot=pivot,
     )
-    codes = list(filter(lambda x: re.match(r"[A-Z]\d{1}[A-Z]$", x), batch.schema.names))
+    codes = list(filter(_match_code, batch.schema.names))
     ordered_cols = ["time", "station", "prn"]
     rx_x = header_dict["rx_x"]
     rx_y = header_dict["rx_y"]
@@ -178,11 +221,142 @@ def read_rinex_obs(
         df.lazy()
         .with_columns(
             pl.col("time").cast(pl.Datetime("ms", "UTC")),
-            pl.lit(header.marker_name).alias("station"),
+            pl.lit(header.marker_name).cast(pl.Categorical).alias("station"),
+            pl.col("prn").cast(pl.Categorical),
         )
         .fill_nan(None)
         .select(ordered_cols)
         .sort(["time", "station", "prn"])
     )
 
+    if not utc:
+        lf = lf.with_columns(
+            pl.col("time")
+            .add(
+                get_leap_seconds("time")
+                if header.leap_seconds is None
+                else pl.duration(seconds=header.leap_seconds)
+            )
+            .dt.replace_time_zone(None)
+        )
+
     return header, lf
+
+
+def get_leap_seconds(time_col: pl.Expr | str) -> pl.Expr:
+    if isinstance(time_col, str):
+        time_col = pl.col(time_col)
+
+    return (
+        pl.when(
+            time_col.is_between(
+                pl.datetime(1980, 1, 1), pl.datetime(1981, 7, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=0))
+        .when(
+            time_col.is_between(
+                pl.datetime(1981, 7, 1), pl.datetime(1982, 7, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=1))
+        .when(
+            time_col.is_between(
+                pl.datetime(1982, 7, 1), pl.datetime(1983, 7, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=2))
+        .when(
+            time_col.is_between(
+                pl.datetime(1983, 7, 1), pl.datetime(1985, 7, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=3))
+        .when(
+            time_col.is_between(
+                pl.datetime(1985, 7, 1), pl.datetime(1988, 1, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=4))
+        .when(
+            time_col.is_between(
+                pl.datetime(1988, 1, 1), pl.datetime(1990, 1, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=5))
+        .when(
+            time_col.is_between(
+                pl.datetime(1990, 1, 1), pl.datetime(1991, 1, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=6))
+        .when(
+            time_col.is_between(
+                pl.datetime(1991, 1, 1), pl.datetime(1992, 7, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=7))
+        .when(
+            time_col.is_between(
+                pl.datetime(1992, 7, 1), pl.datetime(1993, 7, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=8))
+        .when(
+            time_col.is_between(
+                pl.datetime(1993, 7, 1), pl.datetime(1994, 7, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=9))
+        .when(
+            time_col.is_between(
+                pl.datetime(1994, 7, 1), pl.datetime(1996, 1, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=10))
+        .when(
+            time_col.is_between(
+                pl.datetime(1996, 1, 1), pl.datetime(1997, 7, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=11))
+        .when(
+            time_col.is_between(
+                pl.datetime(1997, 7, 1), pl.datetime(1999, 1, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=12))
+        .when(
+            time_col.is_between(
+                pl.datetime(1999, 1, 1), pl.datetime(2006, 1, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=13))
+        .when(
+            time_col.is_between(
+                pl.datetime(2006, 1, 1), pl.datetime(2009, 1, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=14))
+        .when(
+            time_col.is_between(
+                pl.datetime(2009, 1, 1), pl.datetime(2012, 7, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=15))
+        .when(
+            time_col.is_between(
+                pl.datetime(2012, 7, 1), pl.datetime(2015, 7, 1), "left"
+            )
+        )
+        .then(pl.duration(seconds=16))
+        .when(
+            time_col.is_between(
+                pl.datetime(2015, 7, 1), pl.datetime(2016, 12, 31), "left"
+            )
+        )
+        .then(pl.duration(seconds=17))
+        .when(time_col.ge(pl.datetime(2016, 12, 31)))
+        .then(pl.duration(seconds=18))
+        .otherwise(None)
+    )

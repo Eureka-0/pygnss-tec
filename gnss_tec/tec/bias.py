@@ -3,16 +3,22 @@ from __future__ import annotations
 import gzip
 import io
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Literal, overload
+from typing import Literal
 
-import pandas as pd
+import numpy as np
 import polars as pl
+from scipy.optimize import lsq_linear, minimize_scalar
 
 
 def _read_bias_file(fn: str | Path) -> pl.LazyFrame:
-    with gzip.open(fn, "rt") as f:
-        lines = f.readlines()
+    if str(fn).endswith(".gz"):
+        with gzip.open(fn, "rt") as f:
+            lines = f.readlines()
+    else:
+        with open(fn, "r") as f:
+            lines = f.readlines()
 
     if not lines:
         raise ValueError(f"Bias file {fn} is empty.")
@@ -46,15 +52,34 @@ def _read_bias_file(fn: str | Path) -> pl.LazyFrame:
 
     colspecs = [(m.start(), m.end()) for m in re.finditer(r"\S+", header_str)]
     cols = [col.strip("*_").lower() for col in header_str.split()]
-    df = (
-        pl.from_pandas(pd.read_fwf(buf, colspecs=colspecs, names=cols, header=None))
-        .lazy()
-        .drop("bias", "svn")
+    schema = {
+        "prn": pl.Categorical,
+        "station": pl.Categorical,
+        "obs1": pl.Categorical,
+        "obs2": pl.Categorical,
+        "unit": pl.Categorical,
+        "estimated_value": pl.Float64,
+        "std_dev": pl.Float64,
+    }
+    lf = (
+        pl.scan_csv(buf, has_header=False, new_columns=["full_str"])
+        .with_columns(
+            [
+                pl.col("full_str")
+                .str.slice(colspec[0], colspec[1] - colspec[0])
+                .str.strip_chars()
+                .replace("", None)
+                .cast(schema.get(col, pl.String))
+                .alias(col)
+                for colspec, col in zip(colspecs, cols)
+            ]
+        )
+        .drop("full_str", "bias", "svn")
     )
 
     for col in ["bias_start", "bias_end"]:
-        df = (
-            df.with_columns(pl.col(col).str.split(":").alias("parts"))
+        lf = (
+            lf.with_columns(pl.col(col).str.split(":").alias("parts"))
             .with_columns(
                 pl.col("parts").list.get(0).alias("year"),
                 pl.col("parts").list.get(1).alias("doy"),
@@ -70,32 +95,18 @@ def _read_bias_file(fn: str | Path) -> pl.LazyFrame:
             .drop("parts", "year", "doy", "sod")
         )
 
-    return df
+    return lf
 
 
-@overload
-def read_bias(
-    fn: str | Path | Iterable[str | Path], *, lazy: Literal[True]
-) -> pl.LazyFrame: ...
+def read_bias(fn: str | Path | Iterable[str | Path]) -> pl.LazyFrame:
+    """
+    Read GNSS DCB bias files into a Polars DataFrame.
 
-
-@overload
-def read_bias(
-    fn: str | Path | Iterable[str | Path], *, lazy: Literal[False] = False
-) -> pl.DataFrame: ...
-
-
-def read_bias(
-    fn: str | Path | Iterable[str | Path], *, lazy: bool = False
-) -> pl.DataFrame | pl.LazyFrame:
-    """Read GNSS DCB bias files into a Polars DataFrame.
     Args:
         fn (str | Path | Iterable[str | Path]): Path(s) to the bias file(s).
-        lazy (bool, optional): Whether to return a lazy DataFrame. Defaults to False.
 
     Returns:
-        (pl.DataFrame | pl.LazyFrame): A DataFrame or LazyFrame containing the bias
-            data.
+        pl.LazyFrame: A LazyFrame containing the bias data.
     """
     if isinstance(fn, (str, Path)):
         fn_list = [str(fn)]
@@ -108,9 +119,133 @@ def read_bias(
         if not Path(f).exists():
             raise FileNotFoundError(f"Bias file not found: {f}")
 
-    df = pl.concat([_read_bias_file(f) for f in fn_list])
+    return pl.concat([_read_bias_file(f) for f in fn_list])
 
-    if lazy:
-        return df
+
+def estimate_rx_bias(
+    df: pl.DataFrame | pl.LazyFrame, method: Literal["mstd", "lsq"], downsample: bool
+) -> pl.LazyFrame:
+    """
+    Estimate receiver bias in sTEC measurements.
+
+    Args:
+        df (pl.DataFrame | pl.LazyFrame): Input DataFrame containing sTEC measurements.
+        method (Literal["mstd", "lsq"]): Method for bias correction.
+        downsample (bool): Whether to downsample the data before estimation.
+
+    Returns:
+        pl.LazyFrame: LazyFrame with receiver bias estimates added, in TECU.
+    """
+    if method == "mstd":
+        estimate_func = _mstd_rx_bias
+    elif method == "lsq":
+        estimate_func = _lsq_rx_bias
     else:
-        return df.collect()
+        raise ValueError(f"Unknown bias correction method: {method}")
+
+    lf = df.lazy()
+    if downsample:
+        bias_lf = lf.group_by_dynamic(
+            "time", every="30s", group_by=["station", "prn"]
+        ).agg(pl.all().first())
+    else:
+        bias_lf = lf
+
+    bias_lf = bias_lf.with_columns(
+        pl.col("time").dt.date().alias("date"),
+        pl.col("prn").cat.slice(0, 1).alias("constellation"),
+    )
+    bias_lf = bias_lf.group_by(
+        "date", "station", "constellation", "C1_code", "C2_code"
+    ).agg(
+        pl.struct("time", "stec_dcb_corrected", "mf", "ipp_lat", "ipp_lon", "rx_lat")
+        .map_batches(estimate_func, return_dtype=pl.Float64, returns_scalar=True)
+        .alias("rx_bias")
+    )
+
+    return (
+        lf.with_columns(
+            pl.col("time").dt.date().alias("date"),
+            pl.col("prn").cat.slice(0, 1).alias("constellation"),
+        )
+        .drop("rx_bias")
+        .join(
+            bias_lf,
+            on=["date", "station", "constellation", "C1_code", "C2_code"],
+            how="left",
+        )
+        .fill_nan(None)
+        .drop("date", "constellation")
+    )
+
+
+def _mstd_rx_bias(s: pl.Series) -> float:
+    df = s.struct.unnest()
+    df = (
+        df.with_columns(
+            pl.col("time").add(pl.duration(hours=pl.col("ipp_lon") / 15)).alias("lt")
+        )
+        .with_columns(
+            pl.col("lt")
+            .sub(pl.col("lt").dt.truncate("1d"))
+            .dt.total_hours(fractional=True)
+        )
+        .filter((pl.col("lt") >= 18) | (pl.col("lt") <= 6))
+    )
+    if df.height < 10:
+        return np.nan
+
+    def mean_std(bias: float) -> float:
+        corrected = df.with_columns(
+            (pl.col("stec_dcb_corrected").sub(bias) / pl.col("mf")).alias("vtec")
+        ).with_columns(pl.col("vtec").std().over("time").mean().alias("mean_std"))
+
+        return corrected.get_column("mean_std").item(0)
+
+    result = minimize_scalar(mean_std, bounds=(-500, 500), method="bounded")
+    return result.x
+
+
+def _lsq_rx_bias(s: pl.Series) -> float:
+    df = s.struct.unnest()
+    A = (
+        df.with_columns(
+            (pl.col("time") - pl.col("time").dt.truncate("1d"))
+            .dt.total_hours(fractional=True)
+            .mul(np.pi / 12)
+            .alias("h"),
+            (pl.col("ipp_lat") - pl.col("rx_lat")).mul(np.pi / 180).alias("phi"),
+        )
+        .with_columns(
+            (pl.col("mf") * pl.col("h")).alias("h1"),
+            (pl.col("mf") * pl.col("phi")).alias("phi1"),
+            (pl.col("mf") * pl.col("h").pow(2)).alias("h2"),
+            (pl.col("mf") * pl.col("phi").pow(2)).alias("phi2"),
+            (pl.col("mf") * pl.col("h") * pl.col("phi")).alias("hphi"),
+            (pl.col("mf") * pl.col("h").pow(2) * pl.col("phi")).alias("h2phi"),
+            (pl.col("mf") * pl.col("h") * pl.col("phi").pow(2)).alias("hphi2"),
+            (pl.col("mf") * pl.col("h").pow(2) * pl.col("phi").pow(2)).alias("h2phi2"),
+            (pl.col("mf") * pl.col("h").cos()).alias("cosh"),
+            (pl.col("mf") * pl.col("h").sin()).alias("sinh"),
+            (pl.col("mf") * pl.col("h").mul(2).cos()).alias("cos2h"),
+            (pl.col("mf") * pl.col("h").mul(2).sin()).alias("sin2h"),
+            (pl.col("mf") * pl.col("h").mul(3).cos()).alias("cos3h"),
+            (pl.col("mf") * pl.col("h").mul(3).sin()).alias("sin3h"),
+            (pl.col("mf") * pl.col("h").mul(4).cos()).alias("cos4h"),
+            (pl.col("mf") * pl.col("h").mul(4).sin()).alias("sin4h"),
+        )
+        .select(
+            pl.lit(1).alias("intercept"),
+            pl.col(
+                "mf", "h1", "phi1", "h2", "phi2", "hphi", "h2phi", "hphi2", "h2phi2"
+            ),
+            pl.col(
+                "cosh", "sinh", "cos2h", "sin2h", "cos3h", "sin3h", "cos4h", "sin4h"
+            ),
+        )
+        .fill_null(np.nan)
+        .to_numpy()
+    )
+    b = df.get_column("stec_dcb_corrected").fill_null(np.nan).to_numpy()
+    result = lsq_linear(A, b)
+    return result.x[0]

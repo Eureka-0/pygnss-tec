@@ -8,7 +8,7 @@ import numpy as np
 import polars as pl
 import polars.selectors as cs
 
-from ..rinex import get_leap_seconds, read_rinex_obs
+from ..rinex import RinexObsHeader, get_leap_seconds, read_rinex_obs
 from .bias import estimate_rx_bias, read_bias
 from .constants import SIGNAL_FREQ, TECConfig, c, get_sampling_config
 from .mapping_func import single_layer_model
@@ -234,7 +234,7 @@ def _correct_cycle_slip(
 
 def calc_tec_from_df(
     df: pl.DataFrame | pl.LazyFrame,
-    sampling_interval: int | None = None,
+    header: RinexObsHeader | None = None,
     bias_fn: str | Path | Iterable[str | Path] | None = None,
     config: TECConfig = TECConfig(),
 ) -> pl.LazyFrame:
@@ -245,8 +245,9 @@ def calc_tec_from_df(
     Args:
         df (pl.DataFrame | pl.LazyFrame): Input DataFrame or LazyFrame containing GNSS
             observations.
-        sampling_interval (int | None, optional): Sampling interval in seconds. If
-            None, it will be inferred from the data. Defaults to None.
+        header (RinexObsHeader | None, optional): RINEX observation file header. If
+            provided, it will be used to infer the sampling interval and receiver
+            geodetic coordinates. Defaults to None.
         bias_fn (str | Path | Iterable[str | Path] | None, optional): Path(s) to the
             bias file(s). If provided, DCB biases will be applied to the TEC
             calculation. Defaults to None.
@@ -267,6 +268,14 @@ def calc_tec_from_df(
         .drop(cs.matches(r"^D\d[A-Z]$"))
     )
 
+    if header is None:
+        sampling_interval = None
+    else:
+        sampling_interval = header.sampling_interval
+        lf = lf.with_columns(
+            pl.lit(header.rx_geodetic[0], dtype=pl.Float32).alias("rx_lat"),
+            pl.lit(header.rx_geodetic[1], dtype=pl.Float32).alias("rx_lon"),
+        )
     if sampling_interval is None:
         sampling_interval = int(
             lf.select(
@@ -462,29 +471,9 @@ def calc_tec_from_parquet(
     """
     lf = pl.scan_parquet(parquet_fn)
     metadata = pl.read_parquet_metadata(parquet_fn)
+    header = RinexObsHeader.from_metadata(metadata)
 
-    sampling_interval = metadata.get("sampling_interval", None)
-    if sampling_interval is not None:
-        sampling_interval = int(sampling_interval)
-
-    rx_lat = metadata.get("rx_geodetic_lat", None)
-    if rx_lat is not None:
-        rx_lat = float(rx_lat)
-    else:
-        raise ValueError("Receiver latitude not found in parquet metadata.")
-
-    rx_lon = metadata.get("rx_geodetic_lon", None)
-    if rx_lon is not None:
-        rx_lon = float(rx_lon)
-    else:
-        raise ValueError("Receiver longitude not found in parquet metadata.")
-
-    lf = lf.with_columns(
-        pl.lit(rx_lat, dtype=pl.Float32).alias("rx_lat"),
-        pl.lit(rx_lon, dtype=pl.Float32).alias("rx_lon"),
-    )
-
-    return calc_tec_from_df(lf, sampling_interval, bias_fn, config)
+    return calc_tec_from_df(lf, header, bias_fn, config)
 
 
 def calc_tec_from_rinex(
@@ -518,9 +507,4 @@ def calc_tec_from_rinex(
     """
     header, lf = read_rinex_obs(obs_fn, nav_fn, config.constellations, station=station)
 
-    lf = lf.with_columns(
-        pl.lit(header.rx_geodetic[0], dtype=pl.Float32).alias("rx_lat"),
-        pl.lit(header.rx_geodetic[1], dtype=pl.Float32).alias("rx_lon"),
-    )
-
-    return calc_tec_from_df(lf, header.sampling_interval, bias_fn, config)
+    return calc_tec_from_df(lf, header, bias_fn, config)

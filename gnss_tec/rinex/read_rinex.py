@@ -83,6 +83,38 @@ class RinexObsHeader:
             "leap_seconds": str(self.leap_seconds or ""),
         }
 
+    @staticmethod
+    def from_metadata(metadata: dict[str, str]) -> RinexObsHeader:
+        """
+        Create a RinexObsHeader from a dictionary of Parquet file metadata.
+        """
+        sampling_interval = (
+            int(metadata["sampling_interval"])
+            if metadata["sampling_interval"]
+            else None
+        )
+        leap_seconds = (
+            int(metadata["leap_seconds"]) if metadata["leap_seconds"] else None
+        )
+        return RinexObsHeader(
+            version=metadata["version"],
+            constellation=metadata["constellation"] or None,
+            marker_name=metadata["marker_name"],
+            marker_type=metadata["marker_type"] or None,
+            rx_ecef=(
+                float(metadata["rx_ecef_x"]),
+                float(metadata["rx_ecef_y"]),
+                float(metadata["rx_ecef_z"]),
+            ),
+            rx_geodetic=(
+                float(metadata["rx_geodetic_lat"]),
+                float(metadata["rx_geodetic_lon"]),
+                float(metadata["rx_geodetic_alt"]),
+            ),
+            sampling_interval=sampling_interval,
+            leap_seconds=leap_seconds,
+        )
+
 
 def _handle_fn(fn: str | Path | Iterable[str | Path]) -> list[str]:
     if isinstance(fn, (str, Path)):

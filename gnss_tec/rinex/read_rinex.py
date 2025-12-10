@@ -134,10 +134,7 @@ def _handle_fn(fn: str | Path | Iterable[str | Path]) -> list[str]:
 
 
 def _match_code(code: str) -> bool:
-    return (
-        re.match(r"[A-Z]\d[A-Z]$", code) is not None
-        or re.match(r"[A-Z]\d$", code) is not None
-    )
+    return re.match(r"[A-Z]\d[A-Z]{0,1}$", code) is not None
 
 
 def read_rinex_obs(

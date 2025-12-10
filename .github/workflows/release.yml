@@ -7,8 +7,8 @@ on:
       - v*
 
 env:
-  PYTHON_VERSION: "3.13"
-  FREE_THREADED_PYTHON_VERSION: "3.13t"
+  PYTHON_VERSION: "3.14"
+  FREE_THREADED_PYTHON_VERSION: "3.14t"
 
 jobs:
   linux:

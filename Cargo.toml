@@ -17,7 +17,11 @@ custom-alloc = ["tikv-jemallocator", "mimalloc"]
 arrow = { version = "57.1.0", default-features = false, features = ["pyarrow"] }
 pyo3 = { version = "0.26", features = ["extension-module", "abi3-py39"] }
 rayon = "1.11.0"
-rinex = { version = "0.21.1", features = ["flate2", "nav", "qc"] }
+rinex = { git = "https://github.com/nav-solutions/rinex.git", branch = "main", features = [
+    "flate2",
+    "nav",
+    "qc",
+] }
 rustc-hash = "2.1.1"
 
 [target.'cfg(target_family = "unix")'.dependencies]

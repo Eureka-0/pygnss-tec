@@ -188,7 +188,7 @@ tec_lf = gt.calc_tec_from_df(lf, header, "./data/bias/CAS0OPSRAP_20240100000_01D
 
 #### From parquet file
 
-Reading RINEX files are time-consuming, accounting for at least 80% of the total processing time. Thus, if you need to perform TEC calculation multiple times on the same RINEX files (e.g., when tuning configuration), it is recommended to save the parsed LazyFrame to a parquet file after the first read, and then use `calc_tec_from_parquet` for subsequent TEC calculations:
+Reading RINEX files is time-consuming, accounting for at least 80% of the total processing time. Thus, if you need to perform TEC calculation multiple times on the same RINEX files (e.g., when tuning configuration), it is recommended to save the parsed LazyFrame to a parquet file after the first read, and then use `calc_tec_from_parquet` for subsequent TEC calculations:
 
 ```python
 header, lf = gt.read_rinex_obs(
@@ -211,11 +211,11 @@ tec_lf = gt.calc_tec_from_parquet(
 
 #### Configuration
 
-You can customize the TEC calculation process using the `TecConfig` dataclass:
+You can customize the TEC calculation process using the `TECConfig` dataclass:
 
 ```python
 # To see the default configuration
-print(gt.TecConfig())
+print(gt.TECConfig())
 # TECConfig(
 #     constellations='CG',
 #     ipp_height=400,
@@ -239,8 +239,8 @@ The meaning of each parameter is as follows:
 - `ipp_height`: The assumed height of the ionospheric pierce point (IPP) in kilometers.
 - `min_elevation`: The minimum satellite elevation angle (in degrees) for observations to be considered in the TEC calculation.
 - `min_snr`: The minimum signal-to-noise ratio (in dB-Hz) for observations to be considered in the TEC calculation.
-- `c1_codes`: A dictionary specifying the preferred observation codes for the first frequency (C1) for each constellation. The codes are prioritized in the order they are listed, with the first available code being used.
-- `c2_codes`: A dictionary specifying the preferred observation codes for the second frequency (C2) for each constellation. The codes are prioritized in the order they are listed, with the first available code being used.
+- `c1_codes`: A dictionary specifying the preferred observation codes for the first frequency (C1) for each constellation. The codes are prioritized in the order they are listed, with the first available code being used. This parameter supports setting for partial constellations (e.g., `c1_codes={'C': [...]} ` to only set for Beidou, and use default for others).
+- `c2_codes`: A dictionary specifying the preferred observation codes for the second frequency (C2) for each constellation, similar to `c1_codes`.
 - `rx_bias`: Specifies how to handle receiver bias. It can be set to 'external' to use an external DCB file for correction, 'mstd' to use the minimum standard deviation method for estimation, 'lsq' to use least squares estimation, or `None` to skip receiver bias correction.
 - `retain_intermediate`: Names of intermediate columns to retain in the output DataFrame. It can be set to `None` to discard all intermediate columns, 'all' to retain all intermediate columns, or a list of column names to keep specific ones.
 

@@ -73,6 +73,12 @@ class TECConfig:
         - None: Do not correct receiver bias.
     """
 
+    mapping_function: Literal["slm", "mslm"] = "slm"
+    """Mapping function to use:
+        - "slm": Single Layer Model
+        - "mslm": Modified Single Layer Model
+    """
+
     retain_intermediate: str | Iterable[str] | None | Literal["all"] = None
     """Names of intermediate columns to retain in the output DataFrame."""
 

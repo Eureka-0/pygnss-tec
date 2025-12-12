@@ -11,7 +11,7 @@ import polars.selectors as cs
 from ..rinex import RinexObsHeader, get_leap_seconds, read_rinex_obs
 from .bias import estimate_rx_bias, read_bias
 from .constants import SIGNAL_FREQ, TECConfig, c, get_sampling_config
-from .mapping_func import single_layer_model
+from .mapping_func import modified_single_layer_model, single_layer_model
 
 
 def _coalesce_observations(
@@ -307,7 +307,13 @@ def calc_tec_from_df(
     lf = _coalesce_observations(lf, bias_lf, config)
     lf = _map_frequencies(lf)
 
-    mf, ipp_lat, ipp_lon = single_layer_model(
+    match config.mapping_function:
+        case "slm":
+            mapping_function = single_layer_model
+        case "mslm":
+            mapping_function = modified_single_layer_model
+
+    mf, ipp_lat, ipp_lon = mapping_function(
         pl.col("azimuth"),
         pl.col("elevation"),
         pl.col("rx_lat"),

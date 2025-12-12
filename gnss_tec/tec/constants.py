@@ -88,6 +88,16 @@ class TECConfig:
         return self.ipp_height * 1e3
 
     @property
+    def mslm_height_m(self) -> float:
+        """Ionospheric pierce point height for Modified Single Layer Model in meters."""
+        return 506.7e3
+
+    @property
+    def alpha(self) -> float:
+        """Correction factor for Modified Single Layer Model."""
+        return 0.9782
+
+    @property
     def code2band(self) -> Mapping[str, int]:
         code_band: dict[str, int] = {}
         for const, code, _ in self.iter_c1_codes():

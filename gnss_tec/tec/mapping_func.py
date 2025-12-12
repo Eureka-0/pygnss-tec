@@ -57,3 +57,29 @@ def single_layer_model(
     ipp_lon = rx_lon + (psi.sin() * az.sin() / ipp_lat.cos()).arcsin()
 
     return mf, ipp_lat.degrees(), ipp_lon.degrees()
+
+
+def modified_single_layer_model(
+    azimuth: pl.Expr,
+    elevation: pl.Expr,
+    rx_lat_deg: pl.Expr,
+    rx_lon_deg: pl.Expr,
+    config: TECConfig,
+) -> tuple[pl.Expr, pl.Expr, pl.Expr]:
+    az = azimuth.radians()
+    el = elevation.radians()
+    rx_lat = rx_lat_deg.radians()
+    rx_lon = rx_lon_deg.radians()
+
+    # mapping function
+    sin_beta = (
+        Re * (np.pi / 2 - el).mul(config.alpha).sin() / (Re + config.mslm_height_m)
+    )
+    mf = sin_beta.arcsin().cos().pow(-1)
+
+    # IPP latitude and longitude, in radians
+    psi = np.pi / 2 - el - sin_beta.arcsin()
+    ipp_lat = (rx_lat.sin() * psi.cos() + rx_lat.cos() * psi.sin() * az.cos()).arcsin()
+    ipp_lon = rx_lon + (psi.sin() * az.sin() / ipp_lat.cos()).arcsin()
+
+    return mf, ipp_lat.degrees(), ipp_lon.degrees()

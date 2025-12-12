@@ -137,6 +137,8 @@ header, lf = gt.read_rinex_obs(
 
 ### TEC calculation
 
+Note: The TEC calculation functions only support RINEX v3.x files for now.
+
 #### From RINEX files
 
 Directly calculate from RINEX files using `calc_tec_from_rinex` function:

@@ -234,7 +234,7 @@ def _correct_cycle_slip(
 
 def calc_tec_from_df(
     df: pl.DataFrame | pl.LazyFrame,
-    header: RinexObsHeader | None = None,
+    header: RinexObsHeader,
     bias_fn: str | Path | Iterable[str | Path] | None = None,
     config: TECConfig = TECConfig(),
 ) -> pl.LazyFrame:
@@ -245,9 +245,8 @@ def calc_tec_from_df(
     Args:
         df (pl.DataFrame | pl.LazyFrame): Input DataFrame or LazyFrame containing GNSS
             observations.
-        header (RinexObsHeader | None, optional): RINEX observation file header. If
-            provided, it will be used to infer the sampling interval and receiver
-            geodetic coordinates. Defaults to None.
+        header (RinexObsHeader): RINEX observation file header. It is used to infer the
+            RINEX metadata such as version, receiver position, and sampling interval.
         bias_fn (str | Path | Iterable[str | Path] | None, optional): Path(s) to the
             bias file(s). If provided, DCB biases will be applied to the TEC
             calculation. Defaults to None.
@@ -268,14 +267,11 @@ def calc_tec_from_df(
         .drop(cs.matches(r"^D\d[A-Z]$"))
     )
 
-    if header is None:
-        sampling_interval = None
-    else:
-        sampling_interval = header.sampling_interval
-        lf = lf.with_columns(
-            pl.lit(header.rx_geodetic[0], dtype=pl.Float32).alias("rx_lat"),
-            pl.lit(header.rx_geodetic[1], dtype=pl.Float32).alias("rx_lon"),
-        )
+    sampling_interval = header.sampling_interval
+    lf = lf.with_columns(
+        pl.lit(header.rx_geodetic[0], dtype=pl.Float32).alias("rx_lat"),
+        pl.lit(header.rx_geodetic[1], dtype=pl.Float32).alias("rx_lon"),
+    )
     if sampling_interval is None:
         sampling_interval = int(
             lf.select(

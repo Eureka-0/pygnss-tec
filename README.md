@@ -247,4 +247,15 @@ The meaning of each parameter is as follows:
 - `mapping_function`: The mapping function to use for converting slant TEC to vertical TEC. It can be set to 'slm' for the Single Layer Model or 'mslm' for the Modified Single Layer Model.
 - `retain_intermediate`: Names of intermediate columns to retain in the output DataFrame. It can be set to `None` to discard all intermediate columns, 'all' to retain all intermediate columns, or a list of column names to keep specific ones.
 
-## Benchmarks
+## Benchmarks (on M2 Pro 12-Core CPU)
+
+| Task                                                      |   Time (s) |
+|:----------------------------------------------------------|-----------:|
+| Read RINEX v2 (3.65 MB)                                   |     0.1362 |
+| Read RINEX v3 (14.02 MB)                                  |     0.7397 |
+| Read RINEX v3 (6.05 MB Hatanaka-compressed)               |     1.2468 |
+| Read RINEX v3 (2.34 MB Hatanaka-compressed)               |     0.5653 |
+| Calculate TEC from RINEX v2 (3.65 MB)                     |     0.1457 |
+| Calculate TEC from RINEX v3 (14.02 MB)                    |     0.7532 |
+| Calculate TEC from RINEX v3 (6.05 MB Hatanaka-compressed) |     1.3067 |
+| Calculate TEC from RINEX v3 (2.34 MB Hatanaka-compressed) |     0.5908 |

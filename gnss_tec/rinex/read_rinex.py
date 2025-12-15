@@ -21,6 +21,47 @@ ALL_CONSTELLATIONS = {
 }
 """All supported GNSS constellations for RINEX file reading."""
 
+LEAP_SECONDS = [
+    (pl.datetime(1980, 1, 1), pl.duration(seconds=0)),
+    (pl.datetime(1981, 7, 1), pl.duration(seconds=1)),
+    (pl.datetime(1982, 7, 1), pl.duration(seconds=2)),
+    (pl.datetime(1983, 7, 1), pl.duration(seconds=3)),
+    (pl.datetime(1985, 7, 1), pl.duration(seconds=4)),
+    (pl.datetime(1988, 1, 1), pl.duration(seconds=5)),
+    (pl.datetime(1990, 1, 1), pl.duration(seconds=6)),
+    (pl.datetime(1991, 1, 1), pl.duration(seconds=7)),
+    (pl.datetime(1992, 7, 1), pl.duration(seconds=8)),
+    (pl.datetime(1993, 7, 1), pl.duration(seconds=9)),
+    (pl.datetime(1994, 7, 1), pl.duration(seconds=10)),
+    (pl.datetime(1996, 1, 1), pl.duration(seconds=11)),
+    (pl.datetime(1997, 7, 1), pl.duration(seconds=12)),
+    (pl.datetime(1999, 1, 1), pl.duration(seconds=13)),
+    (pl.datetime(2006, 1, 1), pl.duration(seconds=14)),
+    (pl.datetime(2009, 1, 1), pl.duration(seconds=15)),
+    (pl.datetime(2012, 7, 1), pl.duration(seconds=16)),
+    (pl.datetime(2015, 7, 1), pl.duration(seconds=17)),
+    (pl.datetime(2016, 12, 31), pl.duration(seconds=18)),
+]
+"""List of leap seconds as (datetime, duration) tuples."""
+
+
+def get_leap_seconds(time_col: pl.Expr | str) -> pl.Expr:
+    if isinstance(time_col, str):
+        time_col = pl.col(time_col)
+    time_col = time_col.dt.replace_time_zone(None)
+
+    expr = None
+    for dt, duration in LEAP_SECONDS[::-1]:
+        if expr is None:
+            expr = pl.when(time_col.ge(dt)).then(duration)
+        else:
+            expr = expr.when(time_col.ge(dt)).then(duration)
+
+    if expr is None:
+        raise ValueError("LEAP_SECONDS list is empty.")
+
+    return expr
+
 
 @dataclass
 class RinexObsHeader:
@@ -270,122 +311,3 @@ def read_rinex_obs(
         )
 
     return header, lf
-
-
-def get_leap_seconds(time_col: pl.Expr | str) -> pl.Expr:
-    if isinstance(time_col, str):
-        time_col = pl.col(time_col)
-
-    return (
-        pl.when(
-            time_col.is_between(
-                pl.datetime(1980, 1, 1), pl.datetime(1981, 7, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=0))
-        .when(
-            time_col.is_between(
-                pl.datetime(1981, 7, 1), pl.datetime(1982, 7, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=1))
-        .when(
-            time_col.is_between(
-                pl.datetime(1982, 7, 1), pl.datetime(1983, 7, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=2))
-        .when(
-            time_col.is_between(
-                pl.datetime(1983, 7, 1), pl.datetime(1985, 7, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=3))
-        .when(
-            time_col.is_between(
-                pl.datetime(1985, 7, 1), pl.datetime(1988, 1, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=4))
-        .when(
-            time_col.is_between(
-                pl.datetime(1988, 1, 1), pl.datetime(1990, 1, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=5))
-        .when(
-            time_col.is_between(
-                pl.datetime(1990, 1, 1), pl.datetime(1991, 1, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=6))
-        .when(
-            time_col.is_between(
-                pl.datetime(1991, 1, 1), pl.datetime(1992, 7, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=7))
-        .when(
-            time_col.is_between(
-                pl.datetime(1992, 7, 1), pl.datetime(1993, 7, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=8))
-        .when(
-            time_col.is_between(
-                pl.datetime(1993, 7, 1), pl.datetime(1994, 7, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=9))
-        .when(
-            time_col.is_between(
-                pl.datetime(1994, 7, 1), pl.datetime(1996, 1, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=10))
-        .when(
-            time_col.is_between(
-                pl.datetime(1996, 1, 1), pl.datetime(1997, 7, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=11))
-        .when(
-            time_col.is_between(
-                pl.datetime(1997, 7, 1), pl.datetime(1999, 1, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=12))
-        .when(
-            time_col.is_between(
-                pl.datetime(1999, 1, 1), pl.datetime(2006, 1, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=13))
-        .when(
-            time_col.is_between(
-                pl.datetime(2006, 1, 1), pl.datetime(2009, 1, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=14))
-        .when(
-            time_col.is_between(
-                pl.datetime(2009, 1, 1), pl.datetime(2012, 7, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=15))
-        .when(
-            time_col.is_between(
-                pl.datetime(2012, 7, 1), pl.datetime(2015, 7, 1), "left"
-            )
-        )
-        .then(pl.duration(seconds=16))
-        .when(
-            time_col.is_between(
-                pl.datetime(2015, 7, 1), pl.datetime(2016, 12, 31), "left"
-            )
-        )
-        .then(pl.duration(seconds=17))
-        .when(time_col.ge(pl.datetime(2016, 12, 31)))
-        .then(pl.duration(seconds=18))
-        .otherwise(None)
-    )

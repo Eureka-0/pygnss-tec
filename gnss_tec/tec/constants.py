@@ -18,7 +18,7 @@ SUPPORTED_RINEX_VERSIONS = ["3"]
 SUPPORTED_CONSTELLATIONS = {"C": "BDS", "G": "GPS"}
 """Supported GNSS constellations for TEC calculation."""
 
-SIGNAL_FREQ = {
+SIGNAL_FREQ: dict[str, dict[str, float]] = {
     "C": {
         "B1-2": 1561.098e6,
         "B1": 1575.42e6,
@@ -31,14 +31,20 @@ SIGNAL_FREQ = {
 }
 """Signal frequencies for supported constellations and signals in Hz."""
 
-DEFAULT_C1_CODES = {
-    "C": ["C2I", "C2D", "C2X", "C1I", "C1D", "C1X", "C2W", "C1C"],
-    "G": ["C1W", "C1C", "C1X"],
+DEFAULT_C1_CODES: dict[str, dict[str, list[str]]] = {
+    "2": {"G": ["C1"]},
+    "3": {
+        "C": ["C2I", "C2D", "C2X", "C1I", "C1D", "C1X", "C2W", "C1C"],
+        "G": ["C1W", "C1C", "C1X"],
+    },
 }
 
-DEFAULT_C2_CODES = {
-    "C": ["C6I", "C6D", "C6X", "C7I", "C7D", "C7X", "C5I", "C5D", "C5X"],
-    "G": ["C2W", "C2C", "C2X", "C5W", "C5C", "C5X"],
+DEFAULT_C2_CODES: dict[str, dict[str, list[str]]] = {
+    "2": {"G": ["C2", "C5"]},
+    "3": {
+        "C": ["C6I", "C6D", "C6X", "C7I", "C7D", "C7X", "C5I", "C5D", "C5X"],
+        "G": ["C2W", "C2C", "C2X", "C5W", "C5C", "C5X"],
+    },
 }
 
 
@@ -58,10 +64,10 @@ class TECConfig:
     min_snr: float = 30.0
     """Minimum signal-to-noise ratio in dB-Hz."""
 
-    c1_codes: Mapping[str, list[str]] = field(default_factory=lambda: {})
+    c1_codes: Mapping[str, Mapping[str, list[str]]] = field(default_factory=lambda: {})
     """Observation codes priority list for C1 measurements."""
 
-    c2_codes: Mapping[str, list[str]] = field(default_factory=lambda: {})
+    c2_codes: Mapping[str, Mapping[str, list[str]]] = field(default_factory=lambda: {})
     """Observation codes priority list for C2 measurements."""
 
     rx_bias: Literal["external", "mstd", "lsq"] | None = "external"
@@ -73,6 +79,12 @@ class TECConfig:
         - None: Do not correct receiver bias.
     """
 
+    mapping_function: Literal["slm", "mslm"] = "slm"
+    """Mapping function to use:
+        - "slm": Single Layer Model
+        - "mslm": Modified Single Layer Model
+    """
+
     retain_intermediate: str | Iterable[str] | None | Literal["all"] = None
     """Names of intermediate columns to retain in the output DataFrame."""
 
@@ -82,37 +94,48 @@ class TECConfig:
         return self.ipp_height * 1e3
 
     @property
-    def code2band(self) -> Mapping[str, int]:
+    def mslm_height_m(self) -> float:
+        """Ionospheric pierce point height for Modified Single Layer Model in meters."""
+        return 506.7e3
+
+    @property
+    def alpha(self) -> float:
+        """Correction factor for Modified Single Layer Model."""
+        return 0.9782
+
+    def iter_c1_codes(
+        self, version: Literal["2", "3"]
+    ) -> Iterator[tuple[str, str, int]]:
+        for constellation, codes in self.c1_codes.get(version, {}).items():
+            for i, code in enumerate(codes):
+                yield constellation, code, i
+
+    def iter_c2_codes(
+        self, version: Literal["2", "3"]
+    ) -> Iterator[tuple[str, str, int]]:
+        for constellation, codes in self.c2_codes.get(version, {}).items():
+            for i, code in enumerate(codes):
+                yield constellation, code, i
+
+    def code2band(self, version: Literal["2", "3"]) -> Mapping[str, int]:
         code_band: dict[str, int] = {}
-        for const, code, _ in self.iter_c1_codes():
+        for const, code, _ in self.iter_c1_codes(version):
             code_band[f"{const}_{code}"] = 1  # C1 band
-        for const, code, _ in self.iter_c2_codes():
+        for const, code, _ in self.iter_c2_codes(version):
             code_band[f"{const}_{code}"] = 2  # C2 band
         return code_band
 
-    @property
-    def c1_priority(self) -> Mapping[str, int]:
+    def c1_priority(self, version: Literal["2", "3"]) -> Mapping[str, int]:
         priority: dict[str, int] = {}
-        for const, code, i in self.iter_c1_codes():
+        for const, code, i in self.iter_c1_codes(version):
             priority[f"{const}_{code}"] = i
         return priority
 
-    @property
-    def c2_priority(self) -> Mapping[str, int]:
+    def c2_priority(self, version: Literal["2", "3"]) -> Mapping[str, int]:
         priority: dict[str, int] = {}
-        for const, code, i in self.iter_c2_codes():
+        for const, code, i in self.iter_c2_codes(version):
             priority[f"{const}_{code}"] = i
         return priority
-
-    def iter_c1_codes(self) -> Iterator[tuple[str, str, int]]:
-        for constellation, codes in self.c1_codes.items():
-            for i, code in enumerate(codes):
-                yield constellation, code, i
-
-    def iter_c2_codes(self) -> Iterator[tuple[str, str, int]]:
-        for constellation, codes in self.c2_codes.items():
-            for i, code in enumerate(codes):
-                yield constellation, code, i
 
     def __post_init__(self):
         # Validate constellations

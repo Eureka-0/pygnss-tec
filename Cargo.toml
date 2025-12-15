@@ -15,7 +15,7 @@ custom-alloc = ["tikv-jemallocator", "mimalloc"]
 
 [dependencies]
 arrow = { version = "57.1.0", default-features = false, features = ["pyarrow"] }
-pyo3 = { version = "0.26", features = ["extension-module", "abi3-py39"] }
+pyo3 = { version = "0.26", features = ["extension-module", "abi3-py310"] }
 rayon = "1.11.0"
 rinex = { git = "https://github.com/nav-solutions/rinex.git", branch = "main", features = [
     "flate2",

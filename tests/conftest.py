@@ -10,12 +10,12 @@ def test_data_dir():
 
 @fixture
 def rinex_obs_v2(test_data_dir):
-    return test_data_dir / "rinex_obs_v2/bele0100.24o.gz"
+    return test_data_dir / "rinex_obs_v2/dgar0100.24o.gz"
 
 
 @fixture
 def rinex_nav_v2(test_data_dir):
-    return test_data_dir / "rinex_nav_v2/brdc0100.24g.gz"
+    return test_data_dir / "rinex_nav_v2/brdc0100.24n.gz"
 
 
 @fixture

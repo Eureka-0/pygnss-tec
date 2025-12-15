@@ -2,6 +2,7 @@
 
 [![PyPI - Version](https://img.shields.io/pypi/v/pygnss-tec)](https://pypi.org/project/pygnss-tec/)
 ![Supported Python Versions](https://img.shields.io/badge/python-%3E%3D3.10-blue)
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/5ec7c48b66f04ebb8a3ce1ea7c03ed64)](https://app.codacy.com/gh/Eureka-0/pygnss-tec/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 [![Test](https://github.com/Eureka-0/pygnss-tec/actions/workflows/test.yml/badge.svg)](https://github.com/Eureka-0/pygnss-tec/actions/workflows/test.yml)
 
@@ -11,12 +12,11 @@ PyGNSS-TEC is a high-performance Python package leveraging Rust acceleration, de
 
 ## Features
 
-- **RINEX File Reading**: Efficient reading and parsing of RINEX GNSS observation files using [rinex crate](https://crates.io/crates/rinex) (see [benchmarks](#benchmarks) for details).
+- **RINEX File Reading**: Efficient reading and parsing of RINEX GNSS observation files using [rinex crate](https://crates.io/crates/rinex) (see [benchmarks](#benchmarks-on-m2-pro-12-core-cpu) for details).
 
 - **Multiple File Formats**: Support for RINEX versions 2.x and 3.x., as well as Hatanaka compressed files (e.g., .Z, .crx, .crx.gz).
 
-- **TEC Calculation**: Efficiently compute TEC from dual-frequency GNSS observations using [polars](https://pola.rs/) DataFrames and lazy evaluation (see [benchmarks](#benchmarks) for details).
-
+- **TEC Calculation**: Efficiently compute TEC from dual-frequency GNSS observations using [polars](https://pola.rs/) DataFrames and lazy evaluation (see [benchmarks](#benchmarks-on-m2-pro-12-core-cpu) for details).
 - **Multi-GNSS Support**: Process observations from multiple GNSS constellations (see [Overview](#overview) for constellation support).
 
 - **Open-Source**: Fully open-source under the MIT License, encouraging community contributions and collaboration.
@@ -188,7 +188,7 @@ tec_lf = gt.calc_tec_from_df(lf, header, "./data/bias/CAS0OPSRAP_20240100000_01D
 
 #### From parquet file
 
-Reading RINEX files is time-consuming, accounting for at least 80% of the total processing time. Thus, if you need to perform TEC calculation multiple times on the same RINEX files (e.g., when tuning configuration), it is recommended to save the parsed LazyFrame to a parquet file after the first read, and then use `calc_tec_from_parquet` for subsequent TEC calculations:
+Reading RINEX files is time-consuming, accounting for at least 90% of the total calculation time. Thus, if you need to perform TEC calculation multiple times on the same RINEX files (e.g., when tuning configuration), it is recommended to save the parsed LazyFrame to a parquet file after the first read, and then use `calc_tec_from_parquet` for subsequent TEC calculations:
 
 ```python
 header, lf = gt.read_rinex_obs(
@@ -222,12 +222,22 @@ print(gt.TECConfig())
 #     min_elevation=30.0,
 #     min_snr=30.0,
 #     c1_codes={
-#         'C': ['C2I', 'C2D', 'C2X', 'C1I', 'C1D', 'C1X', 'C2W', 'C1C'],
-#         'G': ['C1W', 'C1C', 'C1X']
+#         '2': {
+#             'G': ['C1']
+#         },
+#         '3': {
+#             'C': ['C2I', 'C2D', 'C2X', 'C1I', 'C1D', 'C1X', 'C2W', 'C1C'],
+#             'G': ['C1W', 'C1C', 'C1X']
+#         },
 #     },
 #     c2_codes={
-#         'C': ['C6I', 'C6D', 'C6X', 'C7I', 'C7D', 'C7X', 'C5I', 'C5D', 'C5X'],
-#         'G': ['C2W', 'C2C', 'C2X', 'C5W', 'C5C', 'C5X']
+#         '2': {
+#             'G': ['C2', 'C5']
+#         },
+#         '3': {
+#             'C': ['C6I', 'C6D', 'C6X', 'C7I', 'C7D', 'C7X', 'C5I', 'C5D', 'C5X'],
+#             'G': ['C2W', 'C2C', 'C2X', 'C5W', 'C5C', 'C5X']
+#         },
 #     },
 #     rx_bias='external',
 #     mapping_function='slm',
@@ -240,10 +250,21 @@ The meaning of each parameter is as follows:
 - `ipp_height`: The assumed height of the ionospheric pierce point (IPP) in kilometers.
 - `min_elevation`: The minimum satellite elevation angle (in degrees) for observations to be considered in the TEC calculation.
 - `min_snr`: The minimum signal-to-noise ratio (in dB-Hz) for observations to be considered in the TEC calculation.
-- `c1_codes`: A dictionary specifying the preferred observation codes for the first frequency (C1) for each constellation. The codes are prioritized in the order they are listed, with the first available code being used. This parameter supports setting for partial constellations (e.g., `c1_codes={'C': [...]} ` to only set for Beidou, and use default for others).
-- `c2_codes`: A dictionary specifying the preferred observation codes for the second frequency (C2) for each constellation, similar to `c1_codes`.
+- `c1_codes`: A dictionary specifying the preferred observation codes for the first frequency (C1) for each RINEX version and constellation. The codes are prioritized in the order they are listed, with the first available code being used. This parameter supports partial setting (e.g., `c1_codes={'3': {'C': [...]} }` to only set for Beidou in RINEX version 3, and use default for others).
+- `c2_codes`: A dictionary specifying the preferred observation codes for the second frequency (C2) for each RINEX version and constellation, similar to `c1_codes`.
 - `rx_bias`: Specifies how to handle receiver bias. It can be set to 'external' to use an external DCB file for correction, 'mstd' to use the minimum standard deviation method for estimation, 'lsq' to use least squares estimation, or `None` to skip receiver bias correction. Note that the receiver bias estimation is only applicable after the satellite bias has been corrected using an external DCB file (e.g., from IGS). If no external DCB file is provided, this parameter will be ignored. The 'mstd' and 'lsq' methods are for stations that are not included in the external DCB file.
 - `mapping_function`: The mapping function to use for converting slant TEC to vertical TEC. It can be set to 'slm' for the Single Layer Model or 'mslm' for the Modified Single Layer Model.
 - `retain_intermediate`: Names of intermediate columns to retain in the output DataFrame. It can be set to `None` to discard all intermediate columns, 'all' to retain all intermediate columns, or a list of column names to keep specific ones.
 
-## Benchmarks
+## Benchmarks (on M2 Pro 12-Core CPU)
+
+| Task                                                      |   Time (s) |
+|:----------------------------------------------------------|-----------:|
+| Read RINEX v2 (3.65 MB)                                   |     0.1362 |
+| Read RINEX v3 (14.02 MB)                                  |     0.7397 |
+| Read RINEX v3 (6.05 MB Hatanaka-compressed)               |     1.2468 |
+| Read RINEX v3 (2.34 MB Hatanaka-compressed)               |     0.5653 |
+| Calculate TEC from RINEX v2 (3.65 MB)                     |     0.1457 |
+| Calculate TEC from RINEX v3 (14.02 MB)                    |     0.7532 |
+| Calculate TEC from RINEX v3 (6.05 MB Hatanaka-compressed) |     1.3067 |
+| Calculate TEC from RINEX v3 (2.34 MB Hatanaka-compressed) |     0.5908 |

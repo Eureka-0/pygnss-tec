@@ -12,7 +12,7 @@ c = 299792458.0
 Re = 6378.137e3
 """Earth radius in meters."""
 
-SUPPORTED_RINEX_VERSIONS = ["3"]
+SUPPORTED_RINEX_VERSIONS = ["2", "3"]
 """Supported RINEX major versions."""
 
 SUPPORTED_CONSTELLATIONS = {"C": "BDS", "G": "GPS"}
@@ -137,6 +137,35 @@ class TECConfig:
             priority[f"{const}_{code}"] = i
         return priority
 
+    @staticmethod
+    def validate_codes(codes, default) -> dict[str, dict[str, list[str]]]:
+        if not codes:
+            return default
+
+        codes = dict(codes)
+        unknown = codes.keys() - SUPPORTED_RINEX_VERSIONS
+        if unknown:
+            raise ValueError(
+                f"Invalid RINEX versions in codes: {unknown}. "
+                f"Allowed versions are {SUPPORTED_RINEX_VERSIONS}."
+            )
+
+        validated_codes = {}
+        for ver in SUPPORTED_RINEX_VERSIONS:
+            if ver not in codes:
+                validated_codes[ver] = default[ver]
+                continue
+
+            allowed = set(SUPPORTED_CONSTELLATIONS.keys())
+            invalid = codes[ver].keys() - allowed
+            if invalid:
+                raise ValueError(
+                    f"Invalid constellations in codes: {invalid}. "
+                    f"Allowed constellations are {allowed}."
+                )
+            validated_codes[ver] = default[ver] | dict(codes[ver])
+        return validated_codes
+
     def __post_init__(self):
         # Validate constellations
         allowed = set(SUPPORTED_CONSTELLATIONS.keys())
@@ -150,29 +179,12 @@ class TECConfig:
             )
 
         # Set default codes if not provided
-        if not self.c1_codes:
-            object.__setattr__(self, "c1_codes", DEFAULT_C1_CODES)
-        else:
-            user_codes = dict(self.c1_codes)
-            unknown = user_codes.keys() - allowed
-            if unknown:
-                raise ValueError(
-                    f"Invalid constellations in c1_codes: {unknown}. "
-                    f"Allowed constellations are {allowed}."
-                )
-            object.__setattr__(self, "c1_codes", DEFAULT_C1_CODES | user_codes)
-
-        if not self.c2_codes:
-            object.__setattr__(self, "c2_codes", DEFAULT_C2_CODES)
-        else:
-            user_codes = dict(self.c2_codes)
-            unknown = user_codes.keys() - allowed
-            if unknown:
-                raise ValueError(
-                    f"Invalid constellations in c2_codes: {unknown}. "
-                    f"Allowed constellations are {allowed}."
-                )
-            object.__setattr__(self, "c2_codes", DEFAULT_C2_CODES | user_codes)
+        object.__setattr__(
+            self, "c1_codes", self.validate_codes(self.c1_codes, DEFAULT_C1_CODES)
+        )
+        object.__setattr__(
+            self, "c2_codes", self.validate_codes(self.c2_codes, DEFAULT_C2_CODES)
+        )
 
 
 @dataclass(frozen=True)

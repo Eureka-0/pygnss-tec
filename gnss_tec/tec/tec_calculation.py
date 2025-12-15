@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import polars as pl
@@ -15,12 +16,15 @@ from .mapping_func import modified_single_layer_model, single_layer_model
 
 
 def _coalesce_observations(
-    lf: pl.LazyFrame, bias_lf: pl.LazyFrame | None, config: TECConfig
+    lf: pl.LazyFrame,
+    bias_lf: pl.LazyFrame | None,
+    config: TECConfig,
+    version: Literal["2", "3"],
 ) -> pl.LazyFrame:
     # --- 1. Prepare coalesced observation codes for C1 and C2. ---
     lf = lf.with_columns(pl.col("time").dt.date().alias("date"))
     codes_lf = (
-        lf.select("date", "station", "prn", cs.matches(r"^C\d[A-Z]$"))
+        lf.select("date", "station", "prn", cs.matches(r"^C\d[A-Z]{0,1}$"))
         .group_by("date", "station", "prn")
         .agg(pl.all().null_count() / pl.len())
         .unpivot(
@@ -35,7 +39,9 @@ def _coalesce_observations(
         .sort(["date", "station", "prn"])
         .with_columns(
             pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("code"))
-            .replace_strict(config.code2band, default=None, return_dtype=pl.UInt8)
+            .replace_strict(
+                config.code2band(version), default=None, return_dtype=pl.UInt8
+            )
             .alias("band")
         )
         .drop_nulls("band")
@@ -79,10 +85,14 @@ def _coalesce_observations(
     codes_lf = (
         codes_lf.with_columns(
             pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("C1_code"))
-            .replace_strict(config.c1_priority, default=None, return_dtype=pl.UInt8)
+            .replace_strict(
+                config.c1_priority(version), default=None, return_dtype=pl.UInt8
+            )
             .alias("C1_priority"),
             pl.concat_str(pl.col("constellation"), pl.lit("_"), pl.col("C2_code"))
-            .replace_strict(config.c2_priority, default=None, return_dtype=pl.UInt8)
+            .replace_strict(
+                config.c2_priority(version), default=None, return_dtype=pl.UInt8
+            )
             .alias("C2_priority"),
         )
         .group_by("date", "station", "prn")
@@ -107,7 +117,7 @@ def _coalesce_observations(
         expr = None
         # Iterate over all possible column names to build a when-then chain
         available_cols = filter(
-            lambda x: re.match(rf"^[{code_col_name[0]}]\d[A-Z]$", x),
+            lambda x: re.match(f"^[{code_col_name[0]}]" r"\d[A-Z]{0,1}$", x),
             lf.collect_schema().names(),
         )
         for col in available_cols:
@@ -153,12 +163,12 @@ def _coalesce_observations(
         )
         .drop("S1", "S2", "S1_null_pc", "S2_null_pc")
         .with_columns(
-            build_extract_expr("C1_code").alias("C1"),
-            build_extract_expr("C2_code").alias("C2"),
-            build_extract_expr("L1_code").alias("L1"),
-            build_extract_expr("L2_code").alias("L2"),
+            build_extract_expr("C1_code").alias("C1_val"),
+            build_extract_expr("C2_code").alias("C2_val"),
+            build_extract_expr("L1_code").alias("L1_val"),
+            build_extract_expr("L2_code").alias("L2_val"),
         )
-        .drop(cs.matches(r"^[A-Z]\d[A-Z]$"), cs.matches(r"^[LS][12]_code$"))
+        .drop(cs.matches(r"^[A-Z]\d[A-Z]{0,1}$"), cs.matches(r"^[LS][12]_code$"))
     )
 
 
@@ -264,7 +274,7 @@ def calc_tec_from_df(
             pl.col("prn").cat.slice(0, 1).is_in(list(config.constellations)),
         )
         # drop D-code observations
-        .drop(cs.matches(r"^D\d[A-Z]$"))
+        .drop(cs.matches(r"^D\d[A-Z]{0,1}$"))
     )
 
     sampling_interval = header.sampling_interval
@@ -289,18 +299,20 @@ def calc_tec_from_df(
 
     # Determine if the time column is in UTC or GPS time
     is_utc = lf.head(1).collect().get_column("time")[0].tzinfo.key == "UTC"
-    leap_seconds = (
-        get_leap_seconds(pl.col("time").dt.replace_time_zone(None))
-        if is_utc
-        else pl.duration(seconds=0)
-    )
+    leap_seconds = get_leap_seconds("time") if is_utc else pl.duration(seconds=0)
     lf = lf.with_columns(
         # Adjust time to GPS time for correctly joining with bias data
         pl.col("time").add(leap_seconds).dt.replace_time_zone(None)
     )
 
     bias_lf = None if bias_fn is None else read_bias(bias_fn)
-    lf = _coalesce_observations(lf, bias_lf, config)
+    if header.version.startswith("2"):
+        version = "2"
+    elif header.version.startswith("3"):
+        version = "3"
+    else:
+        raise ValueError(f"Unsupported RINEX version: {header.version}")
+    lf = _coalesce_observations(lf, bias_lf, config, version)
     lf = _map_frequencies(lf)
 
     match config.mapping_function:
@@ -331,14 +343,16 @@ def calc_tec_from_df(
     tecu_per_ns = 1e-9 * c * coeff
 
     lf = (
-        lf.drop_nulls(["C1", "C2", "L1", "L2", "C1_freq", "C2_freq"])
+        lf.drop_nulls(["C1_val", "C2_val", "L1_val", "L2_val", "C1_freq", "C2_freq"])
         .with_columns(
             # sTEC from pseudorange, in TECU
-            (pl.col("C2") - pl.col("C1")).mul(coeff).alias("stec_g"),
+            (pl.col("C2_val") - pl.col("C1_val")).mul(coeff).alias("stec_g"),
             # sTEC from carrier phase, in TECU
-            (pl.col("L1") / f1 - pl.col("L2") / f2).mul(c * coeff).alias("stec_p"),
+            (pl.col("L1_val") / f1 - pl.col("L2_val") / f2)
+            .mul(c * coeff)
+            .alias("stec_p"),
         )
-        .drop("C1", "C2", "L1", "L2")
+        .drop("C1_val", "C2_val", "L1_val", "L2_val")
         # Identify arcs based on time gaps
         .with_columns(
             pl.col("time")

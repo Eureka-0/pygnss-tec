@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 
 
+## [0.4.0](https://github.com/Eureka-0/pygnss-tec/releases/tag/v0.4.0) - 2025-12-15
+
+### Added
+
+- Add modified single layer model (MSLM) as an additional mapping function option
+- Support calculating TEC from RINEX v2 files
+
 ## [0.3.1](https://github.com/Eureka-0/pygnss-tec/releases/tag/v0.3.1) - 2025-12-10
 
 ### Fixed

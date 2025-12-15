@@ -222,12 +222,22 @@ print(gt.TECConfig())
 #     min_elevation=30.0,
 #     min_snr=30.0,
 #     c1_codes={
-#         'C': ['C2I', 'C2D', 'C2X', 'C1I', 'C1D', 'C1X', 'C2W', 'C1C'],
-#         'G': ['C1W', 'C1C', 'C1X']
+#         '2': {
+#             'G': ['C1']
+#         },
+#         '3': {
+#             'C': ['C2I', 'C2D', 'C2X', 'C1I', 'C1D', 'C1X', 'C2W', 'C1C'],
+#             'G': ['C1W', 'C1C', 'C1X']
+#         },
 #     },
 #     c2_codes={
-#         'C': ['C6I', 'C6D', 'C6X', 'C7I', 'C7D', 'C7X', 'C5I', 'C5D', 'C5X'],
-#         'G': ['C2W', 'C2C', 'C2X', 'C5W', 'C5C', 'C5X']
+#         '2': {
+#             'G': ['C2', 'C5']
+#         },
+#         '3': {
+#             'C': ['C6I', 'C6D', 'C6X', 'C7I', 'C7D', 'C7X', 'C5I', 'C5D', 'C5X'],
+#             'G': ['C2W', 'C2C', 'C2X', 'C5W', 'C5C', 'C5X']
+#         },
 #     },
 #     rx_bias='external',
 #     mapping_function='slm',
@@ -240,8 +250,8 @@ The meaning of each parameter is as follows:
 - `ipp_height`: The assumed height of the ionospheric pierce point (IPP) in kilometers.
 - `min_elevation`: The minimum satellite elevation angle (in degrees) for observations to be considered in the TEC calculation.
 - `min_snr`: The minimum signal-to-noise ratio (in dB-Hz) for observations to be considered in the TEC calculation.
-- `c1_codes`: A dictionary specifying the preferred observation codes for the first frequency (C1) for each constellation. The codes are prioritized in the order they are listed, with the first available code being used. This parameter supports setting for partial constellations (e.g., `c1_codes={'C': [...]} ` to only set for Beidou, and use default for others).
-- `c2_codes`: A dictionary specifying the preferred observation codes for the second frequency (C2) for each constellation, similar to `c1_codes`.
+- `c1_codes`: A dictionary specifying the preferred observation codes for the first frequency (C1) for each RINEX version and constellation. The codes are prioritized in the order they are listed, with the first available code being used. This parameter supports partial setting (e.g., `c1_codes={'3': {'C': [...]} }` to only set for Beidou in RINEX version 3, and use default for others).
+- `c2_codes`: A dictionary specifying the preferred observation codes for the second frequency (C2) for each RINEX version and constellation, similar to `c1_codes`.
 - `rx_bias`: Specifies how to handle receiver bias. It can be set to 'external' to use an external DCB file for correction, 'mstd' to use the minimum standard deviation method for estimation, 'lsq' to use least squares estimation, or `None` to skip receiver bias correction. Note that the receiver bias estimation is only applicable after the satellite bias has been corrected using an external DCB file (e.g., from IGS). If no external DCB file is provided, this parameter will be ignored. The 'mstd' and 'lsq' methods are for stations that are not included in the external DCB file.
 - `mapping_function`: The mapping function to use for converting slant TEC to vertical TEC. It can be set to 'slm' for the Single Layer Model or 'mslm' for the Modified Single Layer Model.
 - `retain_intermediate`: Names of intermediate columns to retain in the output DataFrame. It can be set to `None` to discard all intermediate columns, 'all' to retain all intermediate columns, or a list of column names to keep specific ones.

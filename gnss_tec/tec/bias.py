@@ -136,12 +136,13 @@ def estimate_rx_bias(
     Returns:
         pl.LazyFrame: LazyFrame with receiver bias estimates added, in TECU.
     """
-    if method == "mstd":
-        estimate_func = _mstd_rx_bias
-    elif method == "lsq":
-        estimate_func = _lsq_rx_bias
-    else:
-        raise ValueError(f"Unknown bias correction method: {method}")
+    match method:
+        case "mstd":
+            estimate_func = _mstd_rx_bias
+        case "lsq":
+            estimate_func = _lsq_rx_bias
+        case _:
+            raise ValueError(f"Unknown bias correction method: {method}")
 
     lf = df.lazy()
     if downsample:
@@ -158,7 +159,7 @@ def estimate_rx_bias(
     bias_lf = bias_lf.group_by(
         "date", "station", "constellation", "C1_code", "C2_code"
     ).agg(
-        pl.struct("time", "stec_dcb_corrected", "mf", "ipp_lat", "ipp_lon", "rx_lat")
+        pl.struct("time", "stec", "tx_bias", "mf", "ipp_lat", "ipp_lon", "rx_lat")
         .map_batches(estimate_func, return_dtype=pl.Float64, returns_scalar=True)
         .alias("rx_bias")
     )
@@ -168,7 +169,6 @@ def estimate_rx_bias(
             pl.col("time").dt.date().alias("date"),
             pl.col("prn").cat.slice(0, 1).alias("constellation"),
         )
-        .drop("rx_bias")
         .join(
             bias_lf,
             on=["date", "station", "constellation", "C1_code", "C2_code"],
@@ -197,7 +197,7 @@ def _mstd_rx_bias(s: pl.Series) -> float:
 
     def mean_std(bias: float) -> float:
         corrected = df.with_columns(
-            (pl.col("stec_dcb_corrected").sub(bias) / pl.col("mf")).alias("vtec")
+            (pl.col("stec").sub(pl.col("tx_bias") + bias) / pl.col("mf")).alias("vtec")
         ).with_columns(pl.col("vtec").std().over("time").mean().alias("mean_std"))
 
         return corrected.get_column("mean_std").item(0)
@@ -246,6 +246,11 @@ def _lsq_rx_bias(s: pl.Series) -> float:
         .fill_null(np.nan)
         .to_numpy()
     )
-    b = df.get_column("stec_dcb_corrected").fill_null(np.nan).to_numpy()
+    b = (
+        df.select(pl.col("stec") - pl.col("tx_bias"))
+        .get_column("stec")
+        .fill_null(np.nan)
+        .to_numpy()
+    )
     result = lsq_linear(A, b)
     return result.x[0]

@@ -78,8 +78,6 @@ def _coalesce_observations(
                 rx_bias_lf,
                 on=["station", "constellation", "C1_code", "C2_code", "date"],
             )
-        else:
-            codes_lf = codes_lf.with_columns(pl.lit(None).alias("rx_bias"))
 
     # ---- 3. Keep only the highest priority codes for C1 and C2. ----
     codes_lf = (
@@ -416,24 +414,25 @@ def calc_tec_from_df(
         lf = lf.with_columns(
             # Convert biases from ns to TECU
             pl.col("tx_bias").mul(tecu_per_ns)
-        ).with_columns(
-            # sTEC corrected for satellite DCB biases, in TECU
-            pl.col("stec").sub(pl.col("tx_bias")).alias("stec_dcb_corrected")
         )
 
-        if config.rx_bias != "external" and config.rx_bias is not None:
-            lf = estimate_rx_bias(
-                lf, method=config.rx_bias, downsample=sampling_interval < 10
-            )
-        else:
+        if config.rx_bias is None:
+            lf = lf.with_columns(pl.lit(None).alias("rx_bias"))
+        elif config.rx_bias == "external":
             lf = lf.with_columns(
                 # Convert biases from ns to TECU
                 pl.col("rx_bias").mul(tecu_per_ns)
             )
+        else:
+            lf = estimate_rx_bias(
+                lf, method=config.rx_bias, downsample=sampling_interval < 10
+            )
 
         lf = lf.with_columns(
             # sTEC corrected for DCB biases, in TECU
-            pl.col("stec_dcb_corrected").sub(pl.col("rx_bias").fill_null(0))
+            pl.col("stec")
+            .sub(pl.col("tx_bias") + pl.col("rx_bias").fill_null(0))
+            .alias("stec_dcb_corrected")
         ).with_columns(
             # vTEC, in TECU
             (pl.col("stec_dcb_corrected") / pl.col("mf")).alias("vtec"),

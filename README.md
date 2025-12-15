@@ -188,7 +188,7 @@ tec_lf = gt.calc_tec_from_df(lf, header, "./data/bias/CAS0OPSRAP_20240100000_01D
 
 #### From parquet file
 
-Reading RINEX files is time-consuming, accounting for at least 80% of the total processing time. Thus, if you need to perform TEC calculation multiple times on the same RINEX files (e.g., when tuning configuration), it is recommended to save the parsed LazyFrame to a parquet file after the first read, and then use `calc_tec_from_parquet` for subsequent TEC calculations:
+Reading RINEX files is time-consuming, accounting for at least 90% of the total calculation time. Thus, if you need to perform TEC calculation multiple times on the same RINEX files (e.g., when tuning configuration), it is recommended to save the parsed LazyFrame to a parquet file after the first read, and then use `calc_tec_from_parquet` for subsequent TEC calculations:
 
 ```python
 header, lf = gt.read_rinex_obs(

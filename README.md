@@ -2,6 +2,7 @@
 
 [![PyPI - Version](https://img.shields.io/pypi/v/pygnss-tec)](https://pypi.org/project/pygnss-tec/)
 ![Supported Python Versions](https://img.shields.io/badge/python-%3E%3D3.10-blue)
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/5ec7c48b66f04ebb8a3ce1ea7c03ed64)](https://app.codacy.com/gh/Eureka-0/pygnss-tec/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 [![Test](https://github.com/Eureka-0/pygnss-tec/actions/workflows/test.yml/badge.svg)](https://github.com/Eureka-0/pygnss-tec/actions/workflows/test.yml)
 
